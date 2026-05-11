@@ -127,6 +127,97 @@ class FrameDecoder:
         actual = frame_with_cs[-2:].decode("ascii", errors="replace").upper()
         return expected == actual
 
+    @staticmethod
+    def decode_escapes(text: str) -> str:
+        """
+        Decode ASTM escape sequences (manual 7.1.4.3.5).
+            &F& → |    &S& → ^    &R& → \\    &E& → &
+        Escape sequences tidak dikenali → dijatuhkan (manual:
+        "skipped and treated as NULL").
+        """
+        # Iteratif by find — sederhana dan cukup cepat untuk message ASTM
+        out = []
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch == "&" and i + 2 < len(text) and text[i + 2] == "&":
+                seq = text[i:i + 3]
+                if seq in ESCAPE_MAP:
+                    out.append(ESCAPE_MAP[seq])
+                else:
+                    # Unknown escape — drop (sesuai manual)
+                    logger.info(f"Unknown escape '{seq}' di-drop")
+                i += 3
+            else:
+                out.append(ch)
+                i += 1
+        return "".join(out)
+
+    def decode(self, raw: bytes) -> tuple[list[str], list[str]]:
+        """
+        Pipeline lengkap: bytes mentah → (record_strings, errors).
+
+        1. Split per frame.
+        2. Validate checksum tiap frame (gagal → tambah error, tetap pakai).
+        3. Concat text dari semua frame.
+        4. Split per CR (manual 7.1.4.3.6) → list of record strings.
+        5. Escape sequences belum di-decode di sini; biarkan RecordParser
+           yang decode setelah split per field (manual: decode after field
+           split agar tidak mengganggu pemisah).
+
+        Args:
+            raw: byte stream yang dikumpulkan receiver antara ENQ dan EOT.
+
+        Returns:
+            (record_strings, errors): list of record-string siap parse,
+            list of pesan error (untuk dimasukkan ke ResultObject.parse_errors).
+        """
+        errors: list[str] = []
+        frames = self.split_frames(raw)
+        if not frames:
+            errors.append("Tidak ada frame valid ditemukan di byte stream")
+            return [], errors
+
+        text_parts: list[str] = []
+        prev_fn: int | None = None
+
+        for idx, frame in enumerate(frames):
+            if not self.validate_checksum(frame):
+                errors.append(f"Frame #{idx + 1} checksum mismatch")
+                logger.warning(f"Frame {idx + 1} checksum invalid")
+
+            # FN sequence sanity (manual 7.1.5: 1..7, lalu 0..7, ...)
+            if len(frame) >= 2:
+                try:
+                    fn = int(chr(frame[1]))
+                    if prev_fn is not None:
+                        expected = (prev_fn % 8) + 1 if prev_fn < 7 else 0
+                        if fn != expected and not (prev_fn == 7 and fn == 0):
+                            errors.append(
+                                f"Frame #{idx + 1} FN loncat: {prev_fn} → {fn}"
+                            )
+                    prev_fn = fn
+                except (ValueError, IndexError):
+                    errors.append(f"Frame #{idx + 1} FN bukan digit")
+
+            # Ekstrak text antara FN dan ETX/ETB
+            try:
+                end_pos = None
+                for j in range(2, len(frame)):
+                    if frame[j] in (ETX, ETB):
+                        end_pos = j
+                        break
+                if end_pos is not None:
+                    text = frame[2:end_pos].decode("ascii", errors="replace")
+                    text_parts.append(text)
+            except Exception as e:
+                errors.append(f"Frame #{idx + 1} decode gagal: {e}")
+
+        full_text = "".join(text_parts)
+        # Split per CR (record separator)
+        records = [r for r in full_text.split("\r") if r.strip()]
+        return records, errors
+
 
 if __name__ == "__main__":
     # ============================================================
@@ -195,3 +286,46 @@ if __name__ == "__main__":
     print("OK: validate_checksum() handles short input")
 
     print("=== FrameDecoder.checksum tests PASSED ===")
+
+    # ============================================================
+    # decode_escapes tests
+    # ============================================================
+    assert FrameDecoder.decode_escapes("abc&F&def") == "abc|def"
+    assert FrameDecoder.decode_escapes("&S&start") == "^start"
+    assert FrameDecoder.decode_escapes("end&R&") == "end\\"
+    assert FrameDecoder.decode_escapes("&E&") == "&"
+    assert FrameDecoder.decode_escapes("plain") == "plain"
+    # Unknown escape dropped
+    assert FrameDecoder.decode_escapes("a&Z&b") == "ab"
+    print("OK: decode_escapes() all four sequences + unknown")
+
+    # ============================================================
+    # FrameDecoder.decode() full pipeline tests
+    # ============================================================
+
+    # Build a valid 1-frame message containing H + L records using checksum helper.
+    body = b"\x021H|\\^&|||c111^Roche^c111\rL|1|N\r\x03"
+    cs = fd.compute_checksum(body)
+    full = body + cs.encode("ascii") + b"\r\n"
+
+    records, errors = fd.decode(full)
+    assert errors == [], f"unexpected errors: {errors}"
+    assert len(records) == 2, f"expected 2 records, got {len(records)}: {records}"
+    assert records[0].startswith("H|"), records[0]
+    assert records[1].startswith("L|"), records[1]
+    print(f"OK: decode() 1-frame message → {len(records)} records, no errors")
+
+    # Decode with broken checksum → still returns records + error noted
+    broken = body + b"FF" + b"\r\n"
+    records, errors = fd.decode(broken)
+    assert len(records) == 2
+    assert any("checksum" in e for e in errors), errors
+    print("OK: decode() broken checksum keeps records + reports error")
+
+    # Empty input → empty + error
+    records, errors = fd.decode(b"")
+    assert records == []
+    assert errors and "Tidak ada frame" in errors[0]
+    print("OK: decode() empty input handled")
+
+    print("=== FrameDecoder.decode tests PASSED ===")
