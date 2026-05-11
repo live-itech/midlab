@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block topbar_title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <p>Overview status service, result, dan order</p>
+</div>
+
+<!-- Service Status Cards -->
+<div class="mb-4">
+  <h2 class="text-sm font-bold mb-3" style="text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary)">Services</h2>
+  <div class="grid grid-4" id="service-cards">
+    <div class="service-card">
+      <div class="text-muted text-sm">Memuat...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Summary Cards -->
+<div class="grid grid-4 mb-4" id="summary-cards">
+  <!-- Results -->
+  <div class="stat-card">
+    <div class="stat-card-label">Results Total</div>
+    <div class="stat-card-value" id="stat-results-total">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-label">Results Pending</div>
+    <div class="stat-card-value text-yellow" id="stat-results-pending">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-label">Results Sent</div>
+    <div class="stat-card-value text-green" id="stat-results-sent">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-label">Results Failed</div>
+    <div class="stat-card-value text-red" id="stat-results-failed">-</div>
+  </div>
+  <!-- Orders -->
+  <div class="stat-card">
+    <div class="stat-card-label">Orders Total</div>
+    <div class="stat-card-value" id="stat-orders-total">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-label">Orders Pending</div>
+    <div class="stat-card-value text-yellow" id="stat-orders-pending">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-label">Orders Sent</div>
+    <div class="stat-card-value text-green" id="stat-orders-sent">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-card-label">Orders Failed</div>
+    <div class="stat-card-value text-red" id="stat-orders-failed">-</div>
+  </div>
+</div>
+
+<!-- Alerts Table -->
+<div class="card">
+  <div class="card-header">
+    <h2>Alert Terbaru</h2>
+    <span class="text-muted text-sm">Max 20 item gagal terbaru</span>
+  </div>
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Tipe</th>
+            <th>ID</th>
+            <th>Instrument</th>
+            <th>Pesan</th>
+            <th>Waktu</th>
+          </tr>
+        </thead>
+        <tbody id="alerts-tbody">
+          <tr><td colspan="5" class="text-center text-muted" style="padding:24px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  function renderServiceCards(services) {
+    const container = document.getElementById('service-cards');
+    const entries = Object.entries(services);
+    if (entries.length === 0) {
+      container.innerHTML = '<div class="text-muted text-sm">Tidak ada service terdaftar</div>';
+      return;
+    }
+    container.innerHTML = entries.map(([name, s]) => {
+      const running = s.running;
+      const badgeClass = running ? 'badge-green' : 'badge-red';
+      const badgeText = running ? 'Running' : 'Stopped';
+      const pid = s.pid || '-';
+      const uptime = s.uptime != null ? App.formatUptime(s.uptime) : '-';
+      return `
+        <div class="service-card">
+          <div class="service-card-header">
+            <span class="service-card-name">${App.escapeHtml(name)}</span>
+            <span class="badge ${badgeClass}"><span class="badge-dot"></span>${badgeText}</span>
+          </div>
+          <div class="service-card-meta">
+            <span>PID: ${pid}</span>
+            <span>Uptime: ${uptime}</span>
+          </div>
+          <div class="service-card-actions">
+            ${!running ? `<button class="btn btn-success btn-xs" onclick="dashAction('start','${App.escapeHtml(name)}')">Start</button>` : ''}
+            ${running ? `<button class="btn btn-danger btn-xs" onclick="dashAction('stop','${App.escapeHtml(name)}')">Stop</button>` : ''}
+            ${running ? `<button class="btn btn-warning btn-xs" onclick="dashAction('restart','${App.escapeHtml(name)}')">Restart</button>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  function renderSummary(results, orders) {
+    const rTotal = (results.pending || 0) + (results.sent || 0) + (results.failed || 0);
+    const oTotal = (orders.pending || 0) + (orders.sent || 0) + (orders.failed || 0);
+    document.getElementById('stat-results-total').textContent = rTotal;
+    document.getElementById('stat-results-pending').textContent = results.pending || 0;
+    document.getElementById('stat-results-sent').textContent = results.sent || 0;
+    document.getElementById('stat-results-failed').textContent = results.failed || 0;
+    document.getElementById('stat-orders-total').textContent = oTotal;
+    document.getElementById('stat-orders-pending').textContent = orders.pending || 0;
+    document.getElementById('stat-orders-sent').textContent = orders.sent || 0;
+    document.getElementById('stat-orders-failed').textContent = orders.failed || 0;
+  }
+
+  function renderAlerts(alerts) {
+    const tbody = document.getElementById('alerts-tbody');
+    if (!alerts || alerts.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted" style="padding:24px">Tidak ada alert</td></tr>';
+      return;
+    }
+    tbody.innerHTML = alerts.map(a => {
+      const typeLabel = a.type === 'result_failed' ? '<span class="badge badge-red">Result</span>' : '<span class="badge badge-orange">Order</span>';
+      return `<tr>
+        <td>${typeLabel}</td>
+        <td>${a.id}</td>
+        <td>${a.instrument_id}</td>
+        <td>${App.escapeHtml(a.message || '-')}</td>
+        <td>${App.formatDatetime(a.timestamp)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function loadDashboard() {
+    try {
+      const data = await App.api('/api/dashboard');
+      renderServiceCards(data.services);
+      renderSummary(data.results_summary, data.orders_summary);
+      renderAlerts(data.alerts);
+    } catch (err) {
+      console.error('Dashboard load error:', err);
+    }
+  }
+
+  window.dashAction = async function(action, name) {
+    if (action === 'stop' || action === 'restart') {
+      const ok = await App.confirm(
+        `${action === 'stop' ? 'Stop' : 'Restart'} Service`,
+        `Yakin ingin ${action} service "${name}"?`
+      );
+      if (!ok) return;
+    }
+    try {
+      await App.api(`/api/services/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
+      App.toast(`Service ${name} ${action} berhasil`, 'success');
+      loadDashboard();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  // Auto-refresh setiap 10 detik
+  App.startAutoRefresh(loadDashboard, 10000);
+})();
+</script>
+{% endblock %}

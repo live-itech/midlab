@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Services{% endblock %}
+{% block topbar_title %}Services{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Services</h1>
+  <p>Kelola dan monitor semua service MidLab</p>
+</div>
+
+<div class="card">
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Nama Service</th>
+            <th>Status</th>
+            <th>PID</th>
+            <th>Uptime</th>
+            <th>Auto-Restart</th>
+            <th>Aksi</th>
+          </tr>
+        </thead>
+        <tbody id="services-tbody">
+          <tr><td colspan="6" class="text-center text-muted" style="padding:24px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  let serviceList = [];
+
+  async function loadServices() {
+    try {
+      serviceList = await App.api('/api/services');
+      renderTable();
+    } catch (err) {
+      console.error('Gagal load services:', err);
+    }
+  }
+
+  function renderTable() {
+    const tbody = document.getElementById('services-tbody');
+    if (serviceList.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted" style="padding:24px">Tidak ada service</td></tr>';
+      return;
+    }
+    tbody.innerHTML = serviceList.map(s => {
+      const statusBadge = s.running
+        ? '<span class="badge badge-green"><span class="badge-dot"></span>Running</span>'
+        : '<span class="badge badge-red"><span class="badge-dot"></span>Stopped</span>';
+      const autoChecked = s.auto_restart ? 'checked' : '';
+      return `<tr>
+        <td class="font-bold">${App.escapeHtml(s.name)}</td>
+        <td>${statusBadge}</td>
+        <td class="font-mono">${s.pid || '-'}</td>
+        <td>${s.uptime != null ? App.formatUptime(s.uptime) : '-'}</td>
+        <td>
+          <label class="toggle">
+            <input type="checkbox" ${autoChecked} onchange="toggleAutoRestart('${App.escapeHtml(s.name)}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </td>
+        <td>
+          <div class="d-flex gap-2">
+            ${!s.running ? `<button class="btn btn-success btn-xs" onclick="svcAction('start','${App.escapeHtml(s.name)}')">Start</button>` : ''}
+            ${s.running ? `<button class="btn btn-danger btn-xs" onclick="svcAction('stop','${App.escapeHtml(s.name)}')">Stop</button>` : ''}
+            ${s.running ? `<button class="btn btn-warning btn-xs" onclick="svcAction('restart','${App.escapeHtml(s.name)}')">Restart</button>` : ''}
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  window.svcAction = async function(action, name) {
+    if (action === 'stop' || action === 'restart') {
+      const ok = await App.confirm(
+        `${action === 'stop' ? 'Stop' : 'Restart'} Service`,
+        `Yakin ingin ${action} service "${name}"?`
+      );
+      if (!ok) return;
+    }
+    try {
+      await App.api(`/api/services/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
+      App.toast(`Service ${name} berhasil di-${action}`, 'success');
+      loadServices();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  window.toggleAutoRestart = async function(name, enabled) {
+    try {
+      await App.api(`/api/services/${encodeURIComponent(name)}/auto-restart`, {
+        method: 'PUT',
+        body: { enabled },
+      });
+      App.toast(`Auto-restart ${name}: ${enabled ? 'ON' : 'OFF'}`, 'success');
+    } catch (err) {
+      App.toast(err.message, 'error');
+      loadServices();
+    }
+  };
+
+  App.startAutoRefresh(loadServices, 10000);
+})();
+</script>
+{% endblock %}

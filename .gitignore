@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.venv/
+
+# Config dengan secrets (jangan push, pakai config.yaml.example)
+config.yaml
+
+# Logs
+*.log
+
+# Runtime
+run/*.pid
+*.pid
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/

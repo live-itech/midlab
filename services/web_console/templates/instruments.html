@@ -1,0 +1,291 @@
+{% extends "base.html" %}
+{% block title %}Instruments{% endblock %}
+{% block topbar_title %}Instruments{% endblock %}
+
+{% block content %}
+<div class="page-header d-flex justify-between items-center">
+  <div>
+    <h1>Instruments</h1>
+    <p>Kelola alat lab yang terhubung ke MidLab</p>
+  </div>
+  <button class="btn btn-primary" onclick="openAddModal()">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    Tambah Instrument
+  </button>
+</div>
+
+<div class="card">
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Nama</th>
+            <th>IP:Port</th>
+            <th>Protocol</th>
+            <th>Mode</th>
+            <th>Bidir Mode</th>
+            <th>Connection</th>
+            <th>Status</th>
+            <th>Aksi</th>
+          </tr>
+        </thead>
+        <tbody id="instruments-tbody">
+          <tr><td colspan="9" class="text-center text-muted" style="padding:24px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Add/Edit Instrument -->
+<div class="modal-overlay" id="instrument-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-title">Tambah Instrument</h3>
+      <button class="modal-close" onclick="App.closeModal('instrument-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form id="instrument-form" onsubmit="return false;">
+        <input type="hidden" id="f-id">
+        <div class="form-group">
+          <label class="form-label">Nama</label>
+          <input type="text" class="form-input" id="f-name" required placeholder="Sysmex XN-1000">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">IP Address</label>
+            <input type="text" class="form-input" id="f-ip" required placeholder="192.168.1.100">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Port</label>
+            <input type="number" class="form-input" id="f-port" required placeholder="9100">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Protocol</label>
+            <select class="form-select" id="f-protocol"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Connection</label>
+            <select class="form-select" id="f-connection">
+              <option value="server">Server</option>
+              <option value="client">Client</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Mode</label>
+          <select class="form-select" id="f-mode" onchange="toggleBidirFields()">
+            <option value="unidirectional">Unidirectional</option>
+            <option value="bidirectional">Bidirectional</option>
+          </select>
+        </div>
+        <div id="bidir-fields" class="hidden">
+          <div class="form-group">
+            <label class="form-label">Bidirectional Mode</label>
+            <select class="form-select" id="f-bidir-mode" onchange="toggleBroadcastInterval()">
+              <option value="">-- Pilih --</option>
+              <option value="broadcast">Broadcast</option>
+              <option value="query">Query</option>
+              <option value="broadcast+query">Broadcast + Query</option>
+            </select>
+          </div>
+          <div class="form-group hidden" id="broadcast-interval-group">
+            <label class="form-label">Broadcast Interval (detik)</label>
+            <input type="number" class="form-input" id="f-broadcast-interval" value="30" min="5">
+          </div>
+        </div>
+        <div class="form-group d-flex items-center gap-2">
+          <label class="toggle">
+            <input type="checkbox" id="f-active" checked>
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="form-label" style="margin-bottom:0">Aktif</span>
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="App.closeModal('instrument-modal')">Batal</button>
+      <button class="btn btn-primary" id="btn-save" onclick="saveInstrument()">Simpan</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  let protocols = [];
+  let instruments = [];
+
+  async function loadProtocols() {
+    try {
+      protocols = await App.api('/api/protocols');
+      const sel = document.getElementById('f-protocol');
+      sel.innerHTML = protocols.map(p => `<option value="${p.name}">${p.name}</option>`).join('');
+    } catch (err) {
+      console.error('Gagal load protocols:', err);
+    }
+  }
+
+  async function loadInstruments() {
+    try {
+      instruments = await App.api('/api/instruments');
+      renderTable();
+    } catch (err) {
+      console.error('Gagal load instruments:', err);
+    }
+  }
+
+  function renderTable() {
+    const tbody = document.getElementById('instruments-tbody');
+    if (instruments.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted" style="padding:24px">Belum ada instrument</td></tr>';
+      return;
+    }
+    tbody.innerHTML = instruments.map(i => {
+      const statusBadge = i.is_active
+        ? '<span class="badge badge-green"><span class="badge-dot"></span>Aktif</span>'
+        : '<span class="badge badge-red"><span class="badge-dot"></span>Nonaktif</span>';
+      const bidir = i.bidir_mode || '-';
+      const showBroadcast = i.mode === 'bidirectional' && (i.bidir_mode === 'broadcast' || i.bidir_mode === 'broadcast+query');
+      const showQuery = i.mode === 'bidirectional' && (i.bidir_mode === 'query' || i.bidir_mode === 'broadcast+query');
+      return `<tr>
+        <td>${i.id}</td>
+        <td>${App.escapeHtml(i.name)}</td>
+        <td class="font-mono">${App.escapeHtml(i.ip_address)}:${i.port}</td>
+        <td><span class="badge badge-blue">${i.protocol}</span></td>
+        <td>${i.mode}</td>
+        <td>${bidir}</td>
+        <td>${i.connection}</td>
+        <td>${statusBadge}</td>
+        <td>
+          <div class="d-flex gap-2">
+            <button class="btn btn-ghost btn-xs" onclick="editInstrument(${i.id})" title="Edit">Edit</button>
+            <button class="btn btn-ghost btn-xs" onclick="testConnection(${i.id})" title="Test TCP">Test</button>
+            ${showBroadcast ? `<button class="btn btn-ghost btn-xs" onclick="forceBroadcast(${i.id})" title="Force Broadcast">Broadcast</button>` : ''}
+            <button class="btn btn-danger btn-xs" onclick="deleteInstrument(${i.id},'${App.escapeHtml(i.name)}')" title="Hapus">Hapus</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  window.toggleBidirFields = function() {
+    const mode = document.getElementById('f-mode').value;
+    document.getElementById('bidir-fields').classList.toggle('hidden', mode !== 'bidirectional');
+    if (mode !== 'bidirectional') {
+      document.getElementById('f-bidir-mode').value = '';
+      document.getElementById('broadcast-interval-group').classList.add('hidden');
+    }
+  };
+
+  window.toggleBroadcastInterval = function() {
+    const bidir = document.getElementById('f-bidir-mode').value;
+    const show = bidir === 'broadcast' || bidir === 'broadcast+query';
+    document.getElementById('broadcast-interval-group').classList.toggle('hidden', !show);
+  };
+
+  window.openAddModal = function() {
+    document.getElementById('modal-title').textContent = 'Tambah Instrument';
+    document.getElementById('f-id').value = '';
+    document.getElementById('f-name').value = '';
+    document.getElementById('f-ip').value = '';
+    document.getElementById('f-port').value = '';
+    document.getElementById('f-protocol').selectedIndex = 0;
+    document.getElementById('f-connection').value = 'server';
+    document.getElementById('f-mode').value = 'unidirectional';
+    document.getElementById('f-bidir-mode').value = '';
+    document.getElementById('f-broadcast-interval').value = '30';
+    document.getElementById('f-active').checked = true;
+    toggleBidirFields();
+    App.openModal('instrument-modal');
+  };
+
+  window.editInstrument = function(id) {
+    const inst = instruments.find(i => i.id === id);
+    if (!inst) return;
+    document.getElementById('modal-title').textContent = 'Edit Instrument';
+    document.getElementById('f-id').value = inst.id;
+    document.getElementById('f-name').value = inst.name;
+    document.getElementById('f-ip').value = inst.ip_address;
+    document.getElementById('f-port').value = inst.port;
+    document.getElementById('f-protocol').value = inst.protocol;
+    document.getElementById('f-connection').value = inst.connection;
+    document.getElementById('f-mode').value = inst.mode;
+    document.getElementById('f-bidir-mode').value = inst.bidir_mode || '';
+    document.getElementById('f-broadcast-interval').value = inst.broadcast_interval || 30;
+    document.getElementById('f-active').checked = inst.is_active;
+    toggleBidirFields();
+    toggleBroadcastInterval();
+    App.openModal('instrument-modal');
+  };
+
+  window.saveInstrument = async function() {
+    const id = document.getElementById('f-id').value;
+    const mode = document.getElementById('f-mode').value;
+    const body = {
+      name: document.getElementById('f-name').value,
+      ip_address: document.getElementById('f-ip').value,
+      port: parseInt(document.getElementById('f-port').value),
+      protocol: document.getElementById('f-protocol').value,
+      connection: document.getElementById('f-connection').value,
+      mode: mode,
+      bidir_mode: mode === 'bidirectional' ? (document.getElementById('f-bidir-mode').value || null) : null,
+      broadcast_interval: parseInt(document.getElementById('f-broadcast-interval').value) || 30,
+      is_active: document.getElementById('f-active').checked,
+    };
+
+    try {
+      if (id) {
+        await App.api(`/api/instruments/${id}`, { method: 'PUT', body });
+        App.toast('Instrument berhasil diupdate', 'success');
+      } else {
+        await App.api('/api/instruments', { method: 'POST', body });
+        App.toast('Instrument berhasil ditambahkan', 'success');
+      }
+      App.closeModal('instrument-modal');
+      loadInstruments();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  window.deleteInstrument = async function(id, name) {
+    const ok = await App.confirm('Hapus Instrument', `Yakin ingin menghapus "${name}"? Service TCP terkait akan dihentikan.`);
+    if (!ok) return;
+    try {
+      await App.api(`/api/instruments/${id}`, { method: 'DELETE' });
+      App.toast('Instrument dihapus', 'success');
+      loadInstruments();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  window.testConnection = async function(id) {
+    try {
+      const res = await App.api(`/api/instruments/${id}/test-connection`, { method: 'POST' });
+      App.toast(res.message, 'success');
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  window.forceBroadcast = async function(id) {
+    try {
+      const res = await App.api(`/api/instruments/${id}/force-broadcast`, { method: 'POST' });
+      App.toast(res.message, 'success');
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  loadProtocols();
+  loadInstruments();
+})();
+</script>
+{% endblock %}

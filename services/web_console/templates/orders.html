@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}Orders{% endblock %}
+{% block topbar_title %}Order Monitor{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Order Monitor</h1>
+  <p>Monitor order yang dikirim ke alat lab</p>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div class="filter-bar" style="margin-bottom:0">
+      <select class="form-select" id="filter-status" onchange="loadOrders()">
+        <option value="">Semua Status</option>
+        <option value="pending">Pending</option>
+        <option value="sent">Sent</option>
+        <option value="failed">Failed</option>
+      </select>
+      <select class="form-select" id="filter-instrument" onchange="loadOrders()">
+        <option value="">Semua Instrument</option>
+      </select>
+      <input type="date" class="form-input" id="filter-from" onchange="loadOrders()" style="max-width:160px">
+      <input type="date" class="form-input" id="filter-to" onchange="loadOrders()" style="max-width:160px">
+    </div>
+  </div>
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Instrument</th>
+            <th>Sample ID</th>
+            <th>Status</th>
+            <th>Failed At</th>
+            <th>Created</th>
+            <th>Sent</th>
+            <th>Retry</th>
+            <th>Aksi</th>
+          </tr>
+        </thead>
+        <tbody id="orders-tbody">
+          <tr><td colspan="9" class="text-center text-muted" style="padding:24px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="pagination">
+      <span id="orders-info">-</span>
+      <div class="pagination-controls">
+        <button class="pagination-btn" id="btn-prev" onclick="changePage(-1)" disabled>&laquo;</button>
+        <span id="page-label" class="text-sm">1</span>
+        <button class="pagination-btn" id="btn-next" onclick="changePage(1)">&raquo;</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const PAGE_SIZE = 50;
+  let currentPage = 0;
+  let orderList = [];
+  let instrumentMap = {};
+
+  async function loadInstruments() {
+    try {
+      const list = await App.api('/api/instruments');
+      const sel = document.getElementById('filter-instrument');
+      list.forEach(i => {
+        instrumentMap[i.id] = i.name;
+        const opt = document.createElement('option');
+        opt.value = i.id;
+        opt.textContent = i.name;
+        sel.appendChild(opt);
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  window.loadOrders = async function() {
+    const status = document.getElementById('filter-status').value;
+    const instId = document.getElementById('filter-instrument').value;
+    const from = document.getElementById('filter-from').value;
+    const to = document.getElementById('filter-to').value;
+
+    const params = { limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE };
+    if (status) params.status = status;
+    if (instId) params.instrument_id = instId;
+    if (from) params.date_from = from;
+    if (to) params.date_to = to;
+
+    try {
+      orderList = await App.api('/api/orders' + App.buildQuery(params));
+      renderTable();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  function getSampleId(o) {
+    try {
+      if (o.order_json && o.order_json.specimen) return o.order_json.specimen.sample_id || '-';
+    } catch {}
+    return '-';
+  }
+
+  function statusBadge(status) {
+    const map = { pending: 'badge-yellow', sent: 'badge-green', failed: 'badge-red' };
+    return `<span class="badge ${map[status] || 'badge-blue'}">${status}</span>`;
+  }
+
+  function renderTable() {
+    const tbody = document.getElementById('orders-tbody');
+    if (orderList.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted" style="padding:24px">Tidak ada data</td></tr>';
+    } else {
+      tbody.innerHTML = orderList.map(o => `<tr>
+        <td>${o.id}</td>
+        <td>${App.escapeHtml(instrumentMap[o.instrument_id] || '#' + o.instrument_id)}</td>
+        <td class="font-mono">${App.escapeHtml(getSampleId(o))}</td>
+        <td>${statusBadge(o.instrument_status)}</td>
+        <td>${o.failed_at_service ? `<span class="badge badge-orange">${App.escapeHtml(o.failed_at_service)}</span>` : '-'}</td>
+        <td>${App.formatDatetime(o.created_at)}</td>
+        <td>${App.formatDatetime(o.sent_to_instrument_at)}</td>
+        <td>${o.retry_count}</td>
+        <td>
+          <div class="d-flex gap-2">
+            <button class="btn btn-ghost btn-xs" onclick="viewOrderJson(${o.id})">JSON</button>
+            ${o.instrument_status === 'failed' ? `<button class="btn btn-primary btn-xs" onclick="retryOrder(${o.id})">Retry</button>` : ''}
+            ${o.instrument_status !== 'sent' ? `<button class="btn btn-danger btn-xs" onclick="cancelOrder(${o.id})">Cancel</button>` : ''}
+          </div>
+        </td>
+      </tr>`).join('');
+    }
+    document.getElementById('page-label').textContent = currentPage + 1;
+    document.getElementById('btn-prev').disabled = currentPage === 0;
+    document.getElementById('btn-next').disabled = orderList.length < PAGE_SIZE;
+    document.getElementById('orders-info').textContent = `Menampilkan ${orderList.length} order (hal ${currentPage + 1})`;
+  }
+
+  window.changePage = function(delta) {
+    currentPage = Math.max(0, currentPage + delta);
+    loadOrders();
+  };
+
+  window.viewOrderJson = function(id) {
+    const o = orderList.find(x => x.id === id);
+    if (o) App.showJsonModal(`Order #${id}`, o.order_json || o);
+  };
+
+  window.retryOrder = async function(id) {
+    try {
+      await App.api(`/api/orders/${id}/retry`, { method: 'POST' });
+      App.toast(`Order ${id} di-retry`, 'success');
+      loadOrders();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  window.cancelOrder = async function(id) {
+    const ok = await App.confirm('Cancel Order', `Yakin ingin cancel order #${id}?`);
+    if (!ok) return;
+    try {
+      await App.api(`/api/orders/${id}/cancel`, { method: 'POST' });
+      App.toast(`Order ${id} di-cancel`, 'success');
+      loadOrders();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  loadInstruments();
+  loadOrders();
+})();
+</script>
+{% endblock %}

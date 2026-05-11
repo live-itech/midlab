@@ -1,0 +1,168 @@
+{% extends "base.html" %}
+{% block title %}Results{% endblock %}
+{% block topbar_title %}Result Monitor{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Result Monitor</h1>
+  <p>Monitor hasil pengukuran dari alat lab</p>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div class="filter-bar" style="margin-bottom:0">
+      <select class="form-select" id="filter-status" onchange="loadResults()">
+        <option value="">Semua Status</option>
+        <option value="pending">Pending</option>
+        <option value="sent">Sent</option>
+        <option value="failed">Failed</option>
+      </select>
+      <select class="form-select" id="filter-instrument" onchange="loadResults()">
+        <option value="">Semua Instrument</option>
+      </select>
+      <input type="date" class="form-input" id="filter-from" onchange="loadResults()" style="max-width:160px">
+      <input type="date" class="form-input" id="filter-to" onchange="loadResults()" style="max-width:160px">
+    </div>
+  </div>
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Instrument</th>
+            <th>Protocol</th>
+            <th>Sample ID</th>
+            <th>Status</th>
+            <th>Received</th>
+            <th>Sent</th>
+            <th>Retry</th>
+            <th>Aksi</th>
+          </tr>
+        </thead>
+        <tbody id="results-tbody">
+          <tr><td colspan="9" class="text-center text-muted" style="padding:24px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="pagination">
+      <span id="results-info">-</span>
+      <div class="pagination-controls">
+        <button class="pagination-btn" id="btn-prev" onclick="changePage(-1)" disabled>&laquo;</button>
+        <span id="page-label" class="text-sm">1</span>
+        <button class="pagination-btn" id="btn-next" onclick="changePage(1)">&raquo;</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const PAGE_SIZE = 50;
+  let currentPage = 0;
+  let resultList = [];
+  let instrumentMap = {};
+
+  async function loadInstruments() {
+    try {
+      const list = await App.api('/api/instruments');
+      const sel = document.getElementById('filter-instrument');
+      list.forEach(i => {
+        instrumentMap[i.id] = i.name;
+        const opt = document.createElement('option');
+        opt.value = i.id;
+        opt.textContent = i.name;
+        sel.appendChild(opt);
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  window.loadResults = async function() {
+    const status = document.getElementById('filter-status').value;
+    const instId = document.getElementById('filter-instrument').value;
+    const from = document.getElementById('filter-from').value;
+    const to = document.getElementById('filter-to').value;
+
+    const params = { limit: PAGE_SIZE, offset: currentPage * PAGE_SIZE };
+    if (status) params.status = status;
+    if (instId) params.instrument_id = instId;
+    if (from) params.date_from = from;
+    if (to) params.date_to = to;
+
+    try {
+      resultList = await App.api('/api/results' + App.buildQuery(params));
+      renderTable();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  function getSampleId(r) {
+    try {
+      if (r.result_json && r.result_json.specimen) return r.result_json.specimen.sample_id || '-';
+    } catch {}
+    return '-';
+  }
+
+  function statusBadge(status) {
+    const map = { pending: 'badge-yellow', sent: 'badge-green', failed: 'badge-red' };
+    return `<span class="badge ${map[status] || 'badge-blue'}">${status}</span>`;
+  }
+
+  function renderTable() {
+    const tbody = document.getElementById('results-tbody');
+    if (resultList.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted" style="padding:24px">Tidak ada data</td></tr>';
+    } else {
+      tbody.innerHTML = resultList.map(r => `<tr>
+        <td>${r.id}</td>
+        <td>${App.escapeHtml(instrumentMap[r.instrument_id] || '#' + r.instrument_id)}</td>
+        <td><span class="badge badge-blue">${r.protocol}</span></td>
+        <td class="font-mono">${App.escapeHtml(getSampleId(r))}</td>
+        <td>${statusBadge(r.send_status)}</td>
+        <td>${App.formatDatetime(r.received_at)}</td>
+        <td>${App.formatDatetime(r.sent_at)}</td>
+        <td>${r.retry_count}</td>
+        <td>
+          <div class="d-flex gap-2">
+            <button class="btn btn-ghost btn-xs" onclick="viewResultJson(${r.id})">JSON</button>
+            ${r.send_status === 'failed' ? `<button class="btn btn-primary btn-xs" onclick="retryResult(${r.id})">Retry</button>` : ''}
+          </div>
+        </td>
+      </tr>`).join('');
+    }
+    document.getElementById('page-label').textContent = currentPage + 1;
+    document.getElementById('btn-prev').disabled = currentPage === 0;
+    document.getElementById('btn-next').disabled = resultList.length < PAGE_SIZE;
+    document.getElementById('results-info').textContent = `Menampilkan ${resultList.length} result (hal ${currentPage + 1})`;
+  }
+
+  window.changePage = function(delta) {
+    currentPage = Math.max(0, currentPage + delta);
+    loadResults();
+  };
+
+  window.viewResultJson = function(id) {
+    const r = resultList.find(x => x.id === id);
+    if (r) App.showJsonModal(`Result #${id}`, r.result_json || r);
+  };
+
+  window.retryResult = async function(id) {
+    try {
+      await App.api(`/api/results/${id}/retry`, { method: 'POST' });
+      App.toast(`Result ${id} di-retry`, 'success');
+      loadResults();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  loadInstruments();
+  loadResults();
+})();
+</script>
+{% endblock %}

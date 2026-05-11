@@ -1,0 +1,20 @@
+[Unit]
+Description=MidLab TCP Socket Service for Instrument %i
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=midlab
+Group=midlab
+WorkingDirectory=/opt/midlab
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 services/tcp_socket/main.py --instrument-id %i
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=midlab-tcp-%i
+
+[Install]
+WantedBy=multi-user.target

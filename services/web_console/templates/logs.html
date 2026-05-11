@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}Logs{% endblock %}
+{% block topbar_title %}Log Viewer{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Log Viewer</h1>
+  <p>Lihat log service secara realtime atau histori</p>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div class="filter-bar" style="margin-bottom:0">
+      <select class="form-select" id="log-service" onchange="switchService()">
+        <option value="">-- Pilih Service --</option>
+      </select>
+      <select class="form-select" id="log-mode" onchange="switchMode()">
+        <option value="live">Live (SSE)</option>
+        <option value="history">Histori</option>
+      </select>
+      <select class="form-select" id="log-level" onchange="applyFilter()">
+        <option value="">ALL</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+      <input type="text" class="form-input" id="log-search" placeholder="Cari..." oninput="applyFilter()" style="max-width:200px">
+      <button class="btn btn-ghost btn-sm" onclick="clearLog()">Clear</button>
+      <button class="btn btn-ghost btn-sm" onclick="downloadLog()">Download</button>
+    </div>
+  </div>
+  <div class="card-body no-padding" style="padding:8px">
+    <div class="log-output" id="log-output">
+      <div class="text-muted" style="padding:16px">Pilih service untuk melihat log</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  let allLines = [];
+  let filteredLines = [];
+
+  // Load daftar service ke dropdown
+  async function loadServiceList() {
+    try {
+      const services = await App.api('/api/services');
+      const sel = document.getElementById('log-service');
+      services.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.name;
+        opt.textContent = s.name;
+        sel.appendChild(opt);
+      });
+    } catch (err) {
+      console.error('Gagal load services:', err);
+    }
+  }
+
+  function getLevel(line) {
+    if (line.includes('[ERROR]')) return 'error';
+    if (line.includes('[WARNING]')) return 'warning';
+    return 'info';
+  }
+
+  function renderLines(lines) {
+    const output = document.getElementById('log-output');
+    if (lines.length === 0) {
+      output.innerHTML = '<div class="text-muted" style="padding:16px">Tidak ada log</div>';
+      return;
+    }
+    output.innerHTML = lines.map(l => {
+      const level = getLevel(l);
+      return `<div class="log-line level-${level}">${App.escapeHtml(l)}</div>`;
+    }).join('');
+    output.scrollTop = output.scrollHeight;
+  }
+
+  window.applyFilter = function() {
+    const level = document.getElementById('log-level').value;
+    const search = document.getElementById('log-search').value.toLowerCase();
+    filteredLines = allLines.filter(l => {
+      if (level && !l.includes(`[${level}]`)) return false;
+      if (search && !l.toLowerCase().includes(search)) return false;
+      return true;
+    });
+    renderLines(filteredLines);
+  };
+
+  window.switchService = function() {
+    const service = document.getElementById('log-service').value;
+    const mode = document.getElementById('log-mode').value;
+    allLines = [];
+    filteredLines = [];
+    App.stopSSE();
+    App.stopAutoRefresh();
+
+    if (!service) {
+      renderLines([]);
+      return;
+    }
+
+    if (mode === 'live') {
+      startLive(service);
+    } else {
+      loadHistory(service);
+    }
+  };
+
+  window.switchMode = function() {
+    switchService();
+  };
+
+  function startLive(service) {
+    renderLines([]);
+    App.startSSE(service, (line) => {
+      allLines.push(line);
+      // Cap di 2000 baris
+      if (allLines.length > 2000) allLines.shift();
+      applyFilter();
+    });
+  }
+
+  async function loadHistory(service) {
+    const level = document.getElementById('log-level').value;
+    const search = document.getElementById('log-search').value;
+    try {
+      const params = new URLSearchParams({ lines: 500 });
+      if (level) params.append('level', level);
+      if (search) params.append('search', search);
+      const data = await App.api(`/api/logs/${encodeURIComponent(service)}?${params}`);
+      allLines = data.lines || [];
+      applyFilter();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  }
+
+  window.clearLog = function() {
+    allLines = [];
+    filteredLines = [];
+    renderLines([]);
+  };
+
+  window.downloadLog = function() {
+    const text = filteredLines.join('\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const service = document.getElementById('log-service').value || 'log';
+    a.download = `${service}_${new Date().toISOString().slice(0,19)}.log`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  loadServiceList();
+})();
+</script>
+{% endblock %}

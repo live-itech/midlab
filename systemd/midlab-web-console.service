@@ -1,0 +1,20 @@
+[Unit]
+Description=MidLab Web Console Service
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=midlab
+Group=midlab
+WorkingDirectory=/opt/midlab
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 services/web_console/main.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=midlab-web-console
+
+[Install]
+WantedBy=multi-user.target
