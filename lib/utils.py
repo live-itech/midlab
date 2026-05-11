@@ -36,6 +36,7 @@ def get_logger(
 
     Format log: [LEVEL] [SERVICE] [INSTRUMENT] pesan
     Output ke: /var/log/midlab/<service_name>.log
+    (atau fallback ke /tmp/midlab jika /var/log/midlab tidak writable)
 
     Args:
         service_name: Nama service (tcp_socket, result_sender, dll)
@@ -65,10 +66,16 @@ def get_logger(
 
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
 
-    # Pastikan direktori log ada
-    os.makedirs(LOG_DIR, exist_ok=True)
+    # Tentukan direktori log (fallback ke /tmp untuk development)
+    log_dir = LOG_DIR
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except (PermissionError, OSError):
+        # Fallback ke /tmp untuk development/testing
+        log_dir = "/tmp/midlab"
+        os.makedirs(log_dir, exist_ok=True)
 
-    log_path = os.path.join(LOG_DIR, log_filename)
+    log_path = os.path.join(log_dir, log_filename)
 
     # RotatingFileHandler sesuai konfigurasi
     handler = RotatingFileHandler(
