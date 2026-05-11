@@ -363,6 +363,68 @@ class RecordParser:
         }
 
     # ============================================================
+    # M — Manufacturer Specific Record (manual 7.2.2.10 M.CR, 7.2.2.11 M.RR)
+    # ============================================================
+    def parse_m(self, record: str) -> dict:
+        """
+        Dispatcher: M record subtype ada di field 3 (index 2) komponen 0.
+            CR^BM^c111^1  → Photometric / ISE Calibration Result
+            RR^BM^c111^1  → Photometric Absorbance raw data
+        Subtype lain → unknown, simpan raw record di parse_errors lewat caller.
+        """
+        fields = self._split_fields(record)
+        subtype_field = fields[2] if len(fields) > 2 else ""
+        subtype = self._component(subtype_field, 0)
+        if subtype == M_SUBTYPE_CR:
+            return self.parse_m_cr(fields)
+        elif subtype == M_SUBTYPE_RR:
+            return self.parse_m_rr(fields)
+        else:
+            return {
+                "record_type": REC_MANUFACTURER,
+                "subtype": subtype,
+                "_unknown": True,
+            }
+
+    def parse_m_cr(self, fields: list[str]) -> dict:
+        """
+        Photometric / ISE Calibration Result (manual 7.2.2.10).
+        Per spec, raw payload (curve params, replicates) di-DROP — kita
+        hanya ekstrak field summary yang berguna untuk audit/LIS.
+        """
+        carrier_field = fields[6] if len(fields) > 6 else ""  # M.CR.07 BS^GLUC^1 / EL^NA
+        return {
+            "record_type": REC_MANUFACTURER,
+            "subtype":           M_SUBTYPE_CR,
+            "sequence":          fields[1] if len(fields) > 1 else "",
+            "test_application_code": self._component(fields[3] if len(fields) > 3 else "", 0),
+            "test_short_name":    self._component(fields[3] if len(fields) > 3 else "", 1),
+            "lot_number":         fields[4] if len(fields) > 4 else "",
+            "unit":               fields[5] if len(fields) > 5 else "",
+            "carrier_type":       self._component(carrier_field, 0),  # BS or EL
+            "carrier_short_name": self._component(carrier_field, 1),
+            "calibration_method": fields[8] if len(fields) > 8 else "",   # M.CR.09 N^M / N^R / I
+            "replicates":         fields[9] if len(fields) > 9 else "",   # M.CR.10
+            "calibration_completed_at": fields[10] if len(fields) > 10 else "",  # M.CR.11 TS
+            "result_state":       self._component(fields[11] if len(fields) > 11 else "", 0),
+            "operator":           self._component(fields[11] if len(fields) > 11 else "", 1),
+        }
+
+    def parse_m_rr(self, fields: list[str]) -> dict:
+        """
+        Photometric Absorbance raw data (manual 7.2.2.11).
+        Raw value list (puluhan/ratusan ratusan absorbance points) di-DROP
+        per spec. Kita hanya simpan summary: subtype, sequence, effective signal.
+        """
+        return {
+            "record_type": REC_MANUFACTURER,
+            "subtype":          M_SUBTYPE_RR,
+            "sequence":         fields[1] if len(fields) > 1 else "",
+            "starting_value":   fields[3] if len(fields) > 3 else "",  # M.RR.04
+            "effective_signal": fields[5] if len(fields) > 5 else "",  # M.RR.06
+        }
+
+    # ============================================================
     # L — Termination (manual 7.2.2.3)
     # ============================================================
     def parse_l(self, record: str) -> dict:
@@ -607,3 +669,55 @@ if __name__ == "__main__":
     print("OK: parse_c() flag with comment text")
 
     print("=== RecordParser R/C tests PASSED ===")
+
+    # ============================================================
+    # RecordParser tests — M.CR, M.RR
+    # ============================================================
+
+    # M.CR — manual example page 53 (truncated curve params for brevity)
+    m_cr = (
+        "2M|1|CR^BM^c111^1|211^Ap211|Rea1.1|mmol/l|BS^Rea1||N^R|2|"
+        "20051221083459|A^$SYS$||1.650000E-01^-3.909952E-05|SD^^^St1.1|"
+        "2110^0.0825^0.055^0.11^0^0\\0^0.165^0.11"
+    )
+    parsed = rp.parse_m(m_cr)
+    assert parsed["record_type"] == "M"
+    assert parsed["subtype"] == "CR"
+    assert parsed["test_application_code"] == "211"
+    assert parsed["test_short_name"] == "Ap211"
+    assert parsed["lot_number"] == "Rea1.1"
+    assert parsed["unit"] == "mmol/l"
+    assert parsed["carrier_type"] == "BS"
+    assert parsed["calibration_method"] == "N^R"
+    assert parsed["result_state"] == "A"
+    assert parsed["operator"] == "$SYS$"
+    print("OK: parse_m_cr() manual example")
+
+    # M.CR — ISE calibration variant (manual page 55 Example Sodium)
+    m_cr_ise = (
+        "2M|1|CR^BM^c111^1|989^NA-I|GSS_ONLY|mmol/L|EL^NA|^NA^0\\^REF^0|I^R|1|"
+        "20081021130649|A^admin||4.914673E+01^5.640128E-03|SD^^^21461500"
+    )
+    parsed_ise = rp.parse_m(m_cr_ise)
+    assert parsed_ise["subtype"] == "CR"
+    assert parsed_ise["carrier_type"] == "EL"  # Electrode
+    assert parsed_ise["test_application_code"] == "989"
+    print("OK: parse_m_cr() ISE variant carrier=EL")
+
+    # M.RR — manual example page 56
+    m_rr = "M|5|RR^BM^c111^1|10|10\\0\\87\\109\\131\\153\\200|0.055000"
+    parsed_rr = rp.parse_m(m_rr)
+    assert parsed_rr["record_type"] == "M"
+    assert parsed_rr["subtype"] == "RR"
+    assert parsed_rr["sequence"] == "5"
+    assert parsed_rr["starting_value"] == "10"
+    assert parsed_rr["effective_signal"] == "0.055000"
+    print("OK: parse_m_rr() manual example")
+
+    # Unknown M subtype
+    parsed_unk = rp.parse_m("M|1|XX^BM^c111^1|foo")
+    assert parsed_unk["subtype"] == "XX"
+    assert parsed_unk["_unknown"] is True
+    print("OK: parse_m() unknown subtype flagged")
+
+    print("=== RecordParser M.CR/M.RR tests PASSED ===")
