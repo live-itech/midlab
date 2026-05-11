@@ -147,6 +147,7 @@ class ResultObject:
     specimen: SpecimenInfo = field(default_factory=SpecimenInfo)
     order: OrderInfo = field(default_factory=OrderInfo)
     results: List[TestResult] = field(default_factory=list)
+    comments: List[str] = field(default_factory=list)
     parse_errors: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -213,3 +214,20 @@ class OrderObject:
         # Filter hanya field yang valid
         valid_keys = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in valid_keys})
+
+
+if __name__ == "__main__":
+    # Test: ResultObject.comments default is empty list
+    r = ResultObject(instrument_id=1, protocol="COBAS_C111")
+    assert r.comments == [], f"expected [], got {r.comments}"
+    print("OK: ResultObject.comments default is []")
+
+    # Test: comments survives to_dict / from_dict roundtrip
+    r.comments.append("order: collected by night shift")
+    d = r.to_dict()
+    assert d["comments"] == ["order: collected by night shift"]
+    r2 = ResultObject.from_dict(d)
+    assert r2.comments == ["order: collected by night shift"]
+    print("OK: comments roundtrip works")
+
+    print("=== ResultObject.comments tests PASSED ===")
