@@ -219,6 +219,94 @@ class FrameDecoder:
         return records, errors
 
 
+class RecordParser:
+    """
+    Upper-layer parser: record string → dict.
+
+    Setiap method `parse_<type>` mengambil string record lengkap
+    (sudah lewat FrameDecoder, masih dengan escape sequences mentah),
+    return dict dengan key `record_type` + field-field spesifik.
+    """
+
+    def __init__(self):
+        # Default delimiters (manual 7.1.4.3 — bisa di-override dari H record)
+        self.field_delim = FIELD_DELIM
+        self.component_delim = COMPONENT_DELIM
+        self.repeat_delim = REPEAT_DELIM
+
+    def _split_fields(self, record: str) -> list[str]:
+        """Split record by field delimiter, decode escapes per field."""
+        return [FrameDecoder.decode_escapes(f) for f in record.split(self.field_delim)]
+
+    def _component(self, field: str, index: int) -> str:
+        """Ambil komponen ke-`index` (0-based) dari sebuah field. Empty bila tidak ada."""
+        parts = field.split(self.component_delim)
+        return parts[index] if index < len(parts) else ""
+
+    # ============================================================
+    # H — Message Header (manual 7.2.2.2)
+    # ============================================================
+    def parse_h(self, record: str) -> dict:
+        """
+        Format c-111 contoh (manual hal 39):
+        H|\\^&|||c111^Roche^c111^0.5.4.0509^1^1005||||host|RSUPL^BATCH|P|1|20051021152259
+
+        Catatan field positions: c-111 mengirim 13 field, bukan 14 seperti
+        skema generik manual — kemungkinan vendor omit satu field "Others".
+        Posisi empirik (0-indexed):
+            0=H, 1=delim, 2-3=empty, 4=sender, 5-7=empty,
+            8=receiver, 9=comment(purpose), 10=processing_id,
+            11=version, 12=datetime.
+        """
+        fields = self._split_fields(record)
+        # Sender CM: Name^Manufacturer^InstrumentType^SWVersion^ProtoVers^Serial
+        sender = fields[4] if len(fields) > 4 else ""
+        # Comment/Special CM: MessageType^Cause (RSUPL^BATCH / RSUPL^REAL)
+        purpose = fields[9] if len(fields) > 9 else ""
+        # Date/Time YYYYMMDDHHMMSS
+        dt = fields[12] if len(fields) > 12 else ""
+
+        return {
+            "record_type": REC_HEADER,
+            "sender_name":       self._component(sender, 0),
+            "sender_manufacturer": self._component(sender, 1),
+            "instrument_type":   self._component(sender, 2),
+            "sw_version":        self._component(sender, 3),
+            "serial_number":     self._component(sender, 5),
+            "receiver_id":       fields[8] if len(fields) > 8 else "",
+            "purpose_type":      self._component(purpose, 0),   # RSUPL etc.
+            "purpose_cause":     self._component(purpose, 1),   # BATCH / REAL
+            "message_datetime":  dt,
+        }
+
+    # ============================================================
+    # P — Patient (manual 7.2.2.4)
+    # ============================================================
+    def parse_p(self, record: str) -> dict:
+        """
+        c-111 biasanya kirim `P|1||` (kosong). Pada NPT mode, field 4
+        (index 3) berisi sampleID part — kita simpan apa adanya.
+        """
+        fields = self._split_fields(record)
+        return {
+            "record_type": REC_PATIENT,
+            "sequence":           fields[1] if len(fields) > 1 else "",
+            "laboratory_pat_id":  fields[3] if len(fields) > 3 else "",
+        }
+
+    # ============================================================
+    # L — Termination (manual 7.2.2.3)
+    # ============================================================
+    def parse_l(self, record: str) -> dict:
+        """`L|1|N` — termination_code: N = normal, E = system error."""
+        fields = self._split_fields(record)
+        return {
+            "record_type": REC_TERMINATOR,
+            "sequence":         fields[1] if len(fields) > 1 else "",
+            "termination_code": fields[2] if len(fields) > 2 else "",
+        }
+
+
 if __name__ == "__main__":
     # ============================================================
     # FrameDecoder.split_frames tests
@@ -329,3 +417,44 @@ if __name__ == "__main__":
     print("OK: decode() empty input handled")
 
     print("=== FrameDecoder.decode tests PASSED ===")
+
+    # ============================================================
+    # RecordParser tests — H, P, L
+    # ============================================================
+    rp = RecordParser()
+
+    # H record — example from manual page 39
+    h_rec = "H|\\^&|||c111^Roche^c111^0.5.4.0509^1^1005||||host|RSUPL^BATCH|P|1|20051021152259"
+    h = rp.parse_h(h_rec)
+    assert h["record_type"] == "H"
+    assert h["sender_name"] == "c111"
+    assert h["sender_manufacturer"] == "Roche"
+    assert h["instrument_type"] == "c111"
+    assert h["sw_version"] == "0.5.4.0509"
+    assert h["serial_number"] == "1005"
+    assert h["receiver_id"] == "host"
+    assert h["purpose_type"] == "RSUPL"
+    assert h["purpose_cause"] == "BATCH"
+    assert h["message_datetime"] == "20051021152259"
+    print("OK: parse_h() manual example parsed correctly")
+
+    # P record — empty patient
+    p = rp.parse_p("P|1||")
+    assert p["record_type"] == "P"
+    assert p["sequence"] == "1"
+    assert p["laboratory_pat_id"] == ""
+    # P record — NPT with sample id part
+    p2 = rp.parse_p("P|1||SAMP123")
+    assert p2["laboratory_pat_id"] == "SAMP123"
+    print("OK: parse_p() handles empty and NPT")
+
+    # L record — normal termination
+    l = rp.parse_l("L|1|N")
+    assert l["record_type"] == "L"
+    assert l["termination_code"] == "N"
+    # L record — error termination
+    l2 = rp.parse_l("L|1|E")
+    assert l2["termination_code"] == "E"
+    print("OK: parse_l() normal + error")
+
+    print("=== RecordParser H/P/L tests PASSED ===")
