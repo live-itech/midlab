@@ -318,6 +318,51 @@ class RecordParser:
         }
 
     # ============================================================
+    # R — Result (manual 7.2.2.7)
+    # ============================================================
+    def parse_r(self, record: str) -> dict:
+        """
+        Example (manual page 48): R|1|^^^111|1480.00|mmol/l||||F||UnitTest
+        Test ID di komponen ke-4 (index 3) dari field 10.1.03.
+        """
+        fields = self._split_fields(record)
+        test_id_field = fields[2] if len(fields) > 2 else ""  # 10.1.03
+        return {
+            "record_type": REC_RESULT,
+            "sequence":           fields[1] if len(fields) > 1 else "",
+            "test_code":          self._component(test_id_field, 3),
+            "treatment":          self._component(test_id_field, 4),
+            "value":              fields[3] if len(fields) > 3 else "",   # 10.1.04
+            "unit":               fields[4] if len(fields) > 4 else "",   # 10.1.05
+            "reference_range":    fields[5] if len(fields) > 5 else "",   # 10.1.06
+            "flag":               fields[6] if len(fields) > 6 else "",   # 10.1.07
+            "result_status":      fields[8] if len(fields) > 8 else "",   # 10.1.09 (F/C/X/R/I)
+            "operator_id":        fields[10] if len(fields) > 10 else "", # 10.1.11
+            "test_started":       fields[11] if len(fields) > 11 else "", # 10.1.12
+            "test_completed":     fields[12] if len(fields) > 12 else "", # 10.1.13
+        }
+
+    # ============================================================
+    # C — Comment (manual 7.2.2.6 setelah O, 7.2.2.8 setelah R)
+    # ============================================================
+    def parse_c(self, record: str) -> dict:
+        """
+        c-111 mengirim C records HANYA setelah R (manual 7.2.2.8) untuk
+        menyampaikan flag yang lebih detail dari yang muat di 10.1.07.
+        Format: C|1|I|<FlagCode>^<FlagComment>|I
+        """
+        fields = self._split_fields(record)
+        text_field = fields[3] if len(fields) > 3 else ""
+        return {
+            "record_type": REC_COMMENT,
+            "sequence":      fields[1] if len(fields) > 1 else "",
+            "comment_source": fields[2] if len(fields) > 2 else "",  # L=host, I=analyzer
+            "flag_code":     self._component(text_field, 0),
+            "flag_comment":  self._component(text_field, 1),
+            "comment_type":  fields[4] if len(fields) > 4 else "",   # I or G
+        }
+
+    # ============================================================
     # L — Termination (manual 7.2.2.3)
     # ============================================================
     def parse_l(self, record: str) -> dict:
@@ -518,3 +563,47 @@ if __name__ == "__main__":
     print("OK: parse_o() QC action code")
 
     print("=== RecordParser O tests PASSED ===")
+
+    # ============================================================
+    # RecordParser tests — R, C
+    # ============================================================
+
+    # R record — manual example page 48
+    r_rec = "R|1|^^^111|1480.00|mmol/l||||F||UnitTest"
+    r = rp.parse_r(r_rec)
+    assert r["record_type"] == "R"
+    assert r["test_code"] == "111"
+    assert r["value"] == "1480.00"
+    assert r["unit"] == "mmol/l"
+    assert r["result_status"] == "F"
+    assert r["operator_id"] == "UnitTest"
+    print("OK: parse_r() manual example")
+
+    # R record — H flag with reference range
+    r2 = rp.parse_r("R|1|^^^687|49.2|U/L|20.0\\30.0|H||F||admin")
+    assert r2["value"] == "49.2"
+    assert r2["flag"] == "H"
+    assert r2["reference_range"] == "20.0\\30.0"
+    print("OK: parse_r() H flag + reference range")
+
+    # R record — below-range with "<" flag
+    r3 = rp.parse_r("R|1|^^^687|-0.1|U/L||<||F||admin")
+    assert r3["flag"] == "<"
+    assert r3["value"] == "-0.1"
+    print("OK: parse_r() below-range flag")
+
+    # C record (after R)
+    c = rp.parse_c("C|1|I|43|I")
+    assert c["record_type"] == "C"
+    assert c["comment_source"] == "I"
+    assert c["flag_code"] == "43"
+    assert c["comment_type"] == "I"
+    print("OK: parse_c() analyzer flag comment")
+
+    # C record with flag + comment text
+    c2 = rp.parse_c("C|1|I|Sol1^F Dev|I")
+    assert c2["flag_code"] == "Sol1"
+    assert c2["flag_comment"] == "F Dev"
+    print("OK: parse_c() flag with comment text")
+
+    print("=== RecordParser R/C tests PASSED ===")
