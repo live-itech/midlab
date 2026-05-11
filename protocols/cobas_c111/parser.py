@@ -295,6 +295,29 @@ class RecordParser:
         }
 
     # ============================================================
+    # O — Test Order (manual 7.2.2.5)
+    # ============================================================
+    def parse_o(self, record: str) -> dict:
+        """
+        Saat alat transmits result, sample_id ada di field 09.4.04
+        (Instrument Specimen ID, format `<Sample ID>^^<Position ID>`).
+        Action code di field 09.4.12 (N=new result, Q=QC).
+        """
+        fields = self._split_fields(record)
+        spec_id_field = fields[3] if len(fields) > 3 else ""  # 09.4.04
+        return {
+            "record_type": REC_ORDER,
+            "sequence":         fields[1] if len(fields) > 1 else "",
+            "specimen_id_host": fields[2] if len(fields) > 2 else "",  # 09.4.03
+            "sample_id":        self._component(spec_id_field, 0),
+            "position_id":      self._component(spec_id_field, 2),
+            "priority":         fields[5] if len(fields) > 5 else "",  # 09.4.06 (R/S)
+            "action_code":      fields[11] if len(fields) > 11 else "", # 09.4.12 (N/Q)
+            "result_datetime":  fields[22] if len(fields) > 22 else "", # 09.4.23
+            "report_type":      fields[25] if len(fields) > 25 else "", # 09.4.26 (F/X/Z/Q)
+        }
+
+    # ============================================================
     # L — Termination (manual 7.2.2.3)
     # ============================================================
     def parse_l(self, record: str) -> dict:
@@ -458,3 +481,40 @@ if __name__ == "__main__":
     print("OK: parse_l() normal + error")
 
     print("=== RecordParser H/P/L tests PASSED ===")
+
+    # ============================================================
+    # RecordParser tests — O
+    # ============================================================
+
+    # O record — analyzer transmits result for a patient sample
+    # Layout (0-indexed): O(0) 1(1) ""(2) Sample1^^Pos1(3) ^^^111(4) R(5)
+    #                     empty 6..10  N(11)  empty 12..21  date(22)
+    #                     empty 23,24  F(25)
+    o_rec = (
+        "O|1||Sample1^^Pos1|^^^111|R||||||N|||||||||||20051021152259|||F"
+    )
+    # Sanity-check pipe count BEFORE running the parser
+    assert o_rec.split("|")[11] == "N", "test string broken: N must land at idx 11"
+    assert o_rec.split("|")[22] == "20051021152259", "test string broken: date must land at idx 22"
+    assert o_rec.split("|")[25] == "F", "test string broken: F must land at idx 25"
+
+    o = rp.parse_o(o_rec)
+    assert o["record_type"] == "O"
+    assert o["sequence"] == "1"
+    assert o["sample_id"] == "Sample1"
+    assert o["position_id"] == "Pos1"
+    assert o["priority"] == "R"
+    assert o["action_code"] == "N"
+    assert o["result_datetime"] == "20051021152259"
+    assert o["report_type"] == "F"
+    print("OK: parse_o() analyzer-transmit example")
+
+    # O record — QC result (priority empty, action_code = Q at idx 11)
+    o_qc = "O|1||QC001^^|^^^111|||||||Q||||||||||||||"
+    assert o_qc.split("|")[11] == "Q", "test string broken: Q must land at idx 11"
+    oq = rp.parse_o(o_qc)
+    assert oq["action_code"] == "Q"
+    assert oq["sample_id"] == "QC001"
+    print("OK: parse_o() QC action code")
+
+    print("=== RecordParser O tests PASSED ===")
