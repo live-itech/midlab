@@ -75,6 +75,58 @@ class FrameDecoder:
                 i += 1
         return frames
 
+    def compute_checksum(self, frame: bytes) -> str:
+        """
+        Hitung checksum 2-hex-char dari satu frame.
+
+        Manual 7.1.5: jumlah ASCII byte dari FN sampai dengan ETX/ETB
+        (inklusif), modulus 256, lalu format 2-digit hex uppercase.
+
+        (Manual menulis "modulus 8" — itu salah ketik vendor; lihat
+        contoh perhitungan halaman 37 dimana hasil 0x1D4h modulus
+        adalah 0xD4 — i.e. modulus 256. Telah diverifikasi terhadap
+        contoh [STX]1Test[ETX] → D4.)
+
+        Args:
+            frame: frame bytes mulai dari STX, berakhir di ETX/ETB
+                   (TANPA dua-byte checksum).
+
+        Returns:
+            String 2-hex-char uppercase (mis. "D4"), atau "" bila frame invalid.
+        """
+        if len(frame) < 3 or frame[0] != STX:
+            return ""
+        # Cari posisi ETX atau ETB
+        end_pos = None
+        for i in range(1, len(frame)):
+            if frame[i] in (ETX, ETB):
+                end_pos = i
+                break
+        if end_pos is None:
+            return ""
+        # Jumlahkan dari index 1 (FN) sampai end_pos (inclusive ETX/ETB)
+        total = sum(frame[1:end_pos + 1]) & 0xFF
+        return f"{total:02X}"
+
+    def validate_checksum(self, frame_with_cs: bytes) -> bool:
+        """
+        Validasi checksum pada frame yang sudah include 2-byte checksum.
+
+        Args:
+            frame_with_cs: bytes seperti yang dihasilkan split_frames() —
+                           dari STX sampai dengan 2 byte checksum.
+
+        Returns:
+            True bila checksum cocok.
+        """
+        if len(frame_with_cs) < 3:
+            return False
+        # Dua karakter terakhir = checksum
+        body = frame_with_cs[:-2]
+        expected = self.compute_checksum(body)
+        actual = frame_with_cs[-2:].decode("ascii", errors="replace").upper()
+        return expected == actual
+
 
 if __name__ == "__main__":
     # ============================================================
@@ -114,3 +166,32 @@ if __name__ == "__main__":
     print("OK: split_frames() truncated tail dropped")
 
     print("=== FrameDecoder.split_frames tests PASSED ===")
+
+    # ============================================================
+    # FrameDecoder.compute_checksum / validate_checksum tests
+    # ============================================================
+
+    # Test: reference example from manual page 37
+    # "[STX]1Test[ETX]" should produce checksum "D4"
+    body = b"\x021Test\x03"
+    cs = fd.compute_checksum(body)
+    assert cs == "D4", f"expected 'D4', got {cs!r}"
+    print(f"OK: compute_checksum reference example → {cs}")
+
+    # Test: validate happy path
+    full_frame = body + b"D4"
+    assert fd.validate_checksum(full_frame) is True
+    print("OK: validate_checksum() valid frame")
+
+    # Test: validate failure path
+    bad_frame = body + b"FF"
+    assert fd.validate_checksum(bad_frame) is False
+    print("OK: validate_checksum() rejects wrong checksum")
+
+    # Test: empty/short input
+    assert fd.compute_checksum(b"") == ""
+    assert fd.compute_checksum(b"\x02") == ""
+    assert fd.validate_checksum(b"\x02") is False
+    print("OK: validate_checksum() handles short input")
+
+    print("=== FrameDecoder.checksum tests PASSED ===")
