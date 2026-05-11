@@ -70,9 +70,15 @@ def get_logger(
     log_dir = LOG_DIR
     try:
         os.makedirs(log_dir, exist_ok=True)
-    except (PermissionError, OSError):
-        # Fallback ke /tmp untuk development/testing
+    except (PermissionError, OSError) as e:
+        import sys
         log_dir = "/tmp/midlab"
+        print(
+            f"WARNING: cannot write to {LOG_DIR}: {e}; "
+            f"falling back to {log_dir}. This is acceptable for development "
+            f"but logs are volatile (cleared on reboot).",
+            file=sys.stderr,
+        )
         os.makedirs(log_dir, exist_ok=True)
 
     log_path = os.path.join(log_dir, log_filename)

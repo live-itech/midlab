@@ -51,6 +51,13 @@ class Config:
                 self._data = yaml.safe_load(f) or {}
         except FileNotFoundError:
             # Development-friendly default: jika config tidak ada, gunakan default values
+            import sys
+            print(
+                f"WARNING: Config file not found at {self._config_path}; "
+                f"using built-in development defaults. "
+                f"For production, create the config file or set MIDLAB_CONFIG env var.",
+                file=sys.stderr,
+            )
             self._data = self._default_config()
         except yaml.YAMLError as e:
             raise ValueError(f"Config YAML tidak valid: {e}")
