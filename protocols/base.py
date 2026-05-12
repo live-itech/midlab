@@ -157,6 +157,7 @@ _PROTOCOL_REGISTRY = {
     "ASTM": "protocols.astm.module",
     "HL7":  "protocols.hl7.module",
     "BCI":  "protocols.bci.module",
+    "COBAS_C111": "protocols.cobas_c111.module",
 }
 
 # Cache instance yang sudah di-load

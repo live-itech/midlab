@@ -85,7 +85,7 @@ class ResultReceiver:
 
         protocol = self._config.protocol.upper()
 
-        if protocol == "ASTM":
+        if protocol in ("ASTM", "COBAS_C111"):
             return await self._handle_astm_data(writer)
         elif protocol == "HL7":
             return await self._handle_hl7_data(writer)
