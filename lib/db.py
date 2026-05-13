@@ -461,6 +461,38 @@ def save_order(instrument_id: int, order_json: dict) -> int | None:
         session.close()
 
 
+def order_exists_by_lis_id(instrument_id: int, lis_order_id: str) -> bool:
+    """Cek apakah tbl_order sudah punya entry untuk (instrument_id, order_json.order_id)."""
+    from sqlalchemy import text
+    db = DBManager()
+    session = db.get_session()
+    try:
+        dialect = session.get_bind().dialect.name
+        if dialect == "mysql":
+            row = session.execute(
+                text(
+                    "SELECT 1 FROM tbl_order "
+                    "WHERE instrument_id = :iid "
+                    "AND JSON_UNQUOTE(JSON_EXTRACT(order_json, '$.order_id')) = :oid "
+                    "LIMIT 1"
+                ),
+                {"iid": instrument_id, "oid": lis_order_id},
+            ).first()
+        else:
+            row = session.execute(
+                text(
+                    "SELECT 1 FROM tbl_order "
+                    "WHERE instrument_id = :iid "
+                    "AND order_json LIKE :pattern "
+                    "LIMIT 1"
+                ),
+                {"iid": instrument_id, "pattern": f'%"order_id": "{lis_order_id}"%'},
+            ).first()
+        return row is not None
+    finally:
+        session.close()
+
+
 def enqueue_lis_event(instrument_id: int, event_type: str, payload: dict) -> int | None:
     """
     Tambahkan event ke tbl_lis_event_queue dengan status pending.
