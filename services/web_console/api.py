@@ -475,6 +475,56 @@ async def delete_instrument(instrument_id: int, x_api_key: str = Header(None)):
         session.close()
 
 
+class LisVerifyRequest(BaseModel):
+    lis_api_key: str
+    lis_base_url: str | None = None
+
+
+class LisVerifyResponse(BaseModel):
+    success: bool
+    lis_instrument_id: str | None = None
+    name: str | None = None
+    vendor: str | None = None
+    model: str | None = None
+    error: str | None = None
+
+
+@app.post("/api/instruments/{instrument_id}/verify-lis", response_model=LisVerifyResponse)
+async def verify_with_lis(
+    instrument_id: int,
+    body: LisVerifyRequest,
+    x_api_key: str = Header(None),
+):
+    """Verify LIS API key dengan call GET /instrument."""
+    _verify_api_key(x_api_key)
+
+    from lib.lis_client import LisApiClient, LisApiError
+    from lib.db import get_setting
+
+    base_url = body.lis_base_url or get_setting(
+        "lis.base_url", "https://eazy.vespahobby.xyz"
+    )
+
+    try:
+        async with LisApiClient(
+            base_url=base_url, api_key=body.lis_api_key,
+            timeout=10, retry_max=1,
+        ) as client:
+            data = await client.get_instrument()
+        info = (data.get("data") or {}).get("instrument") or {}
+        return LisVerifyResponse(
+            success=True,
+            lis_instrument_id=info.get("instrument_id"),
+            name=info.get("name"),
+            vendor=info.get("vendor"),
+            model=info.get("model"),
+        )
+    except LisApiError as e:
+        return LisVerifyResponse(success=False, error=f"{e.status}: {e.message}")
+    except Exception as e:
+        return LisVerifyResponse(success=False, error=str(e))
+
+
 @app.post("/api/instruments/{instrument_id}/test-connection", response_model=MessageResponse)
 async def test_connection(instrument_id: int, x_api_key: str = Header(None)):
     """Test koneksi TCP ke alat."""
