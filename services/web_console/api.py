@@ -204,6 +204,10 @@ class InstrumentCreate(BaseModel):
     broadcast_interval: int = Field(default=30)
     connection: str = Field(default="server", description="server atau client")
     is_active: bool = Field(default=True)
+    lis_instrument_id: Optional[str] = None
+    lis_api_key: Optional[str] = None
+    order_poll_interval: Optional[int] = 10
+    lis_bridge_enabled: bool = False
 
 
 class InstrumentUpdate(BaseModel):
@@ -216,6 +220,10 @@ class InstrumentUpdate(BaseModel):
     broadcast_interval: Optional[int] = None
     connection: Optional[str] = None
     is_active: Optional[bool] = None
+    lis_instrument_id: Optional[str] = None
+    lis_api_key: Optional[str] = None
+    order_poll_interval: Optional[int] = None
+    lis_bridge_enabled: Optional[bool] = None
 
 
 class InstrumentResponse(BaseModel):
@@ -229,6 +237,11 @@ class InstrumentResponse(BaseModel):
     broadcast_interval: int
     connection: str
     is_active: bool
+    lis_instrument_id: Optional[str] = None
+    order_poll_interval: int = 10
+    lis_bridge_enabled: bool = False
+    last_lis_sync_at: Optional[str] = None
+    lis_status_pushed: Optional[str] = None
 
 
 class ResultResponse(BaseModel):
@@ -342,6 +355,11 @@ def _instrument_to_response(row: TblInstrument) -> InstrumentResponse:
         broadcast_interval=row.broadcast_interval or 30,
         connection=row.connection,
         is_active=row.is_active,
+        lis_instrument_id=row.lis_instrument_id,
+        order_poll_interval=row.order_poll_interval or 10,
+        lis_bridge_enabled=bool(row.lis_bridge_enabled),
+        last_lis_sync_at=row.last_lis_sync_at.isoformat() if row.last_lis_sync_at else None,
+        lis_status_pushed=row.lis_status_pushed,
     )
 
 
@@ -378,6 +396,10 @@ async def create_instrument(body: InstrumentCreate, x_api_key: str = Header(None
             broadcast_interval=body.broadcast_interval,
             connection=body.connection,
             is_active=body.is_active,
+            lis_instrument_id=body.lis_instrument_id,
+            lis_api_key=body.lis_api_key,
+            order_poll_interval=body.order_poll_interval or 10,
+            lis_bridge_enabled=body.lis_bridge_enabled,
         )
         session.add(row)
         session.commit()
