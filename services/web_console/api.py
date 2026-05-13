@@ -1224,6 +1224,74 @@ async def dashboard(x_api_key: str = Header(None)):
 
 
 # ============================================================
+# LIS Event Queue
+# ============================================================
+
+class LisEventResponse(BaseModel):
+    id: int
+    instrument_id: int
+    event_type: str
+    payload_json: dict
+    send_status: str
+    retry_count: int
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    sent_at: Optional[str] = None
+
+
+@app.get("/api/lis-events", response_model=list[LisEventResponse])
+async def list_lis_events(
+    instrument_id: Optional[int] = None,
+    status: Optional[str] = None,
+    event_type: Optional[str] = None,
+    limit: int = 100,
+    x_api_key: str = Header(None),
+):
+    _verify_api_key(x_api_key)
+    db = DBManager()
+    session = db.get_session()
+    try:
+        from lib.db import TblLisEventQueue
+        q = session.query(TblLisEventQueue)
+        if instrument_id:
+            q = q.filter(TblLisEventQueue.instrument_id == instrument_id)
+        if status:
+            q = q.filter(TblLisEventQueue.send_status == status)
+        if event_type:
+            q = q.filter(TblLisEventQueue.event_type == event_type)
+        rows = q.order_by(TblLisEventQueue.id.desc()).limit(limit).all()
+        return [
+            LisEventResponse(
+                id=r.id, instrument_id=r.instrument_id,
+                event_type=r.event_type, payload_json=r.payload_json,
+                send_status=r.send_status, retry_count=r.retry_count or 0,
+                error_message=r.error_message,
+                created_at=r.created_at.isoformat() if r.created_at else None,
+                sent_at=r.sent_at.isoformat() if r.sent_at else None,
+            )
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.post("/api/lis-events/{event_id}/retry", response_model=MessageResponse)
+async def retry_lis_event(event_id: int, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    from lib.db import update_lis_event_status
+    ok = update_lis_event_status(event_id, "pending", error_message=None)
+    return MessageResponse(success=ok, message="event reset to pending" if ok else "event not found")
+
+
+@app.post("/api/lis-events/{event_id}/skip", response_model=MessageResponse)
+async def skip_lis_event(event_id: int, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    from lib.db import update_lis_event_status
+    ok = update_lis_event_status(event_id, "skipped", error_message="manually skipped")
+    return MessageResponse(success=ok, message="event skipped" if ok else "event not found")
+
+
+# ============================================================
 # Request Logging Middleware
 # ============================================================
 
