@@ -20,6 +20,7 @@ import signal
 import sys
 
 from protocols.base import load_module
+from lib.db import enqueue_lis_event
 from lib.utils import get_logger
 
 from services.tcp_socket.config import InstrumentConfig
@@ -136,6 +137,20 @@ class TCPSocketService:
         self._shutdown_event.set()
         self._logger.info(f"{self._tag} Service stopped")
 
+    def _emit_lis_status(self, status: str, error_message: str | None = None):
+        """Enqueue status event ke tbl_lis_event_queue (di-drain LisBridgeService)."""
+        payload = {"status": status}
+        if error_message:
+            payload["error_message"] = error_message[:500]
+        try:
+            enqueue_lis_event(
+                instrument_id=self._config.id,
+                event_type="status",
+                payload=payload,
+            )
+        except Exception as e:
+            self._logger.warning(f"{self._tag} enqueue status={status} gagal: {e}")
+
     def _signal_handler(self, sig):
         """Handle SIGTERM/SIGINT — trigger graceful shutdown."""
         sig_name = signal.Signals(sig).name
@@ -195,6 +210,7 @@ class TCPSocketService:
         self._reader = reader
         self._writer = writer
         self._connected = True
+        self._emit_lis_status("online")
 
         # Spawn komponen dan jalankan receive loop
         self._init_components()
@@ -205,6 +221,7 @@ class TCPSocketService:
         finally:
             self._logger.info(f"{self._tag} Koneksi dari {peer} terputus")
             self._connected = False
+            self._emit_lis_status("offline")
             await self._stop_components()
 
     # ============================================================
@@ -235,6 +252,7 @@ class TCPSocketService:
                     f"{self._tag} Connected to "
                     f"{self._config.ip_address}:{self._config.port}"
                 )
+                self._emit_lis_status("online")
 
                 # Spawn komponen dan jalankan receive loop
                 self._init_components()
@@ -244,6 +262,7 @@ class TCPSocketService:
                     await self._receive_loop()
                 finally:
                     self._connected = False
+                    self._emit_lis_status("offline")
                     await self._stop_components()
                     await self._close_connection()
 
@@ -252,6 +271,7 @@ class TCPSocketService:
                     f"{self._tag} Gagal konek: {e}, retry dalam "
                     f"{RECONNECT_DELAY}s..."
                 )
+                self._emit_lis_status("error", str(e))
 
             if not self._running:
                 break
