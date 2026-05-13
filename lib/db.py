@@ -461,6 +461,37 @@ def save_order(instrument_id: int, order_json: dict) -> int | None:
         session.close()
 
 
+def get_log_cursor(instrument_id: int):
+    """Ambil cursor terakhir log yang sudah di-push ke LIS."""
+    raw = get_setting(f"lis.log_cursor.{instrument_id}")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def set_log_cursor(instrument_id: int, ts) -> bool:
+    """Simpan cursor terakhir log yang sudah di-push ke LIS."""
+    return set_setting(f"lis.log_cursor.{instrument_id}", ts.isoformat())
+
+
+def get_service_logs_after(cursor, level_in: tuple, limit: int = 100):
+    """Ambil log dari tbl_service_log setelah cursor, filter level."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        q = session.query(TblServiceLog).filter(
+            TblServiceLog.level.in_(level_in),
+        )
+        if cursor:
+            q = q.filter(TblServiceLog.logged_at > cursor)
+        return q.order_by(TblServiceLog.logged_at.asc()).limit(limit).all()
+    finally:
+        session.close()
+
+
 def order_exists_by_lis_id(instrument_id: int, lis_order_id: str) -> bool:
     """Cek apakah tbl_order sudah punya entry untuk (instrument_id, order_json.order_id)."""
     from sqlalchemy import text
