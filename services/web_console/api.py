@@ -117,6 +117,10 @@ async def page_results(request: Request):
 async def page_orders(request: Request):
     return _templates.TemplateResponse(request, "orders.html", {"active_page": "orders"})
 
+@app.get("/lis-events", response_class=HTMLResponse)
+async def page_lis_events(request: Request):
+    return _templates.TemplateResponse(request, "lis_events.html", {"active_page": "lis_events"})
+
 # Watchdog instance — dibuat saat startup
 watchdog: ServiceWatchdog | None = None
 
