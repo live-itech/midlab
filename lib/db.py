@@ -461,6 +461,19 @@ def save_order(instrument_id: int, order_json: dict) -> int | None:
         session.close()
 
 
+def get_lis_queue_backlog(instrument_id: int) -> int:
+    """Hitung jumlah event pending di tbl_lis_event_queue untuk alat ini."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        return session.query(TblLisEventQueue).filter(
+            TblLisEventQueue.instrument_id == instrument_id,
+            TblLisEventQueue.send_status == "pending",
+        ).count()
+    finally:
+        session.close()
+
+
 def get_instrument_by_id(instrument_id: int):
     """Ambil row TblInstrument by id, atau None."""
     db = DBManager()

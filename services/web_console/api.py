@@ -282,6 +282,7 @@ class DashboardResponse(BaseModel):
     results_summary: dict
     orders_summary: dict
     alerts: list
+    instruments_lis: list = []  # per-instrument LIS bridge state
 
 
 # ============================================================
@@ -1261,11 +1262,29 @@ async def dashboard(x_api_key: str = Header(None)):
         # Sort alerts by timestamp descending
         alerts.sort(key=lambda a: a.get("timestamp") or "", reverse=True)
 
+        # Per-instrument LIS bridge state
+        from lib.db import get_lis_queue_backlog
+        instruments_lis = []
+        for inst in session.query(TblInstrument).order_by(TblInstrument.id).all():
+            svc_name = f"lis_bridge_{inst.id}"
+            svc_info = services.get(svc_name) or {}
+            bridge_running = bool(svc_info.get("running") or svc_info.get("status") == "running")
+            instruments_lis.append({
+                "instrument_id": inst.id,
+                "name": inst.name,
+                "lis_bridge_enabled": bool(inst.lis_bridge_enabled),
+                "lis_bridge_status": "running" if bridge_running else "offline",
+                "last_status_pushed": inst.lis_status_pushed,
+                "queue_backlog": get_lis_queue_backlog(inst.id),
+                "lis_instrument_id": inst.lis_instrument_id,
+            })
+
         return DashboardResponse(
             services=services,
             results_summary=results_summary,
             orders_summary=orders_summary,
             alerts=alerts[:20],
+            instruments_lis=instruments_lis,
         )
 
     finally:

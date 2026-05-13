@@ -57,6 +57,32 @@
 </div>
 
 <!-- Alerts Table -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h2>LIS Bridges</h2>
+    <span class="text-muted text-sm">Status per-alat LisBridgeService</span>
+  </div>
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Instrument</th>
+            <th>LIS ID</th>
+            <th>Status</th>
+            <th>Queue Backlog</th>
+            <th>Last Push</th>
+            <th>Enabled</th>
+          </tr>
+        </thead>
+        <tbody id="lis-bridges-tbody">
+          <tr><td colspan="6" class="text-center text-muted" style="padding:24px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-header">
     <h2>Alert Terbaru</h2>
@@ -149,11 +175,61 @@
     }).join('');
   }
 
+  function renderLisBridges(rows) {
+    const tbody = document.getElementById('lis-bridges-tbody');
+    tbody.replaceChildren();
+    if (!rows || rows.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 6;
+      td.className = 'text-center text-muted';
+      td.style.padding = '24px';
+      td.textContent = 'Belum ada alat';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      const mk = (text, cls) => {
+        const td = document.createElement('td');
+        if (cls) td.className = cls;
+        td.textContent = text == null ? '' : String(text);
+        return td;
+      };
+      tr.appendChild(mk(`${r.name} (#${r.instrument_id})`));
+      tr.appendChild(mk(r.lis_instrument_id || '—', 'font-mono'));
+
+      const statusTd = document.createElement('td');
+      const span = document.createElement('span');
+      span.className = 'badge ' + (r.lis_bridge_status === 'running' ? 'badge-green' : 'badge-red');
+      span.textContent = r.lis_bridge_status;
+      statusTd.appendChild(span);
+      tr.appendChild(statusTd);
+
+      const backlogTd = document.createElement('td');
+      if ((r.queue_backlog || 0) > 0) {
+        const b = document.createElement('span');
+        b.className = 'badge badge-yellow';
+        b.textContent = r.queue_backlog + ' queued';
+        backlogTd.appendChild(b);
+      } else {
+        backlogTd.textContent = '0';
+      }
+      tr.appendChild(backlogTd);
+
+      tr.appendChild(mk(r.last_status_pushed || '—'));
+      tr.appendChild(mk(r.lis_bridge_enabled ? 'Yes' : 'No'));
+      tbody.appendChild(tr);
+    });
+  }
+
   async function loadDashboard() {
     try {
       const data = await App.api('/api/dashboard');
       renderServiceCards(data.services);
       renderSummary(data.results_summary, data.orders_summary);
+      renderLisBridges(data.instruments_lis);
       renderAlerts(data.alerts);
     } catch (err) {
       console.error('Dashboard load error:', err);
