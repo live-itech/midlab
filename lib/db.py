@@ -117,6 +117,25 @@ class TblServiceLog(Base):
     logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
+class TblSetting(Base):
+    """
+    Tabel key/value untuk runtime settings yang bisa diubah dari Web Console
+    tanpa restart (mis. LIS API URL/key untuk ResultSender).
+
+    Service yang membaca settings ini WAJIB punya fallback ke /etc/midlab/config.yaml
+    agar tetap jalan saat tabel kosong / DB down.
+    """
+    __tablename__ = "tbl_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 # ============================================================
 # DBManager — engine, session, dan table management
 # ============================================================
@@ -320,6 +339,60 @@ def save_result(
     except Exception:
         session.rollback()
         return None
+    finally:
+        session.close()
+
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    """
+    Ambil value dari tbl_settings. Return default jika key tidak ada atau DB error.
+    Dipanggil oleh ResultSender tiap poll cycle untuk auto-reload LIS URL/key.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        row = session.query(TblSetting).filter(TblSetting.key == key).first()
+        if row is None or row.value is None:
+            return default
+        return row.value
+    except Exception:
+        return default
+    finally:
+        session.close()
+
+
+def set_setting(key: str, value: str | None) -> bool:
+    """
+    Upsert key/value ke tbl_settings.
+    Returns: True jika berhasil.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        row = session.query(TblSetting).filter(TblSetting.key == key).first()
+        if row is None:
+            row = TblSetting(key=key, value=value)
+            session.add(row)
+        else:
+            row.value = value
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
+def get_all_settings() -> dict:
+    """Return semua key/value sebagai dict. Empty dict jika error."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        rows = session.query(TblSetting).all()
+        return {r.key: r.value for r in rows}
+    except Exception:
+        return {}
     finally:
         session.close()
 

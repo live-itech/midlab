@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% block title %}API Documentation{% endblock %}
+{% block topbar_title %}API Documentation{% endblock %}
+
+{% block head %}
+<style>
+  .docs h2 { font-size: 18px; margin-top: 24px; margin-bottom: 8px; }
+  .docs h3 { font-size: 15px; margin-top: 16px; margin-bottom: 6px; color: var(--text-secondary); }
+  .docs p { font-size: 13px; margin-bottom: 8px; line-height: 1.6; }
+  .docs pre { background: var(--bg-code); border:1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px; font-family: 'SF Mono', monospace; font-size: 12px; overflow-x: auto; line-height: 1.5; }
+  .docs code { background: var(--bg-code); padding: 1px 6px; border-radius: 4px; font-family: 'SF Mono', monospace; font-size: 12px; }
+  .docs ul { padding-left: 22px; margin-bottom: 10px; font-size: 13px; }
+  .docs li { margin-bottom: 4px; }
+  .docs table { margin: 8px 0; }
+  .docs th, .docs td { font-size: 12px; padding: 6px 12px; }
+  .docs .method { display: inline-block; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 11px; font-weight: 700; }
+  .docs .method.GET { background: var(--blue-light); color: var(--blue-dark); }
+  .docs .method.POST { background: var(--green-light); color: var(--green-dark); }
+  .docs .method.PUT { background: var(--yellow-light); color: var(--yellow-dark); }
+  .docs .method.DELETE { background: var(--red-light); color: var(--red-dark); }
+  .toc { position: sticky; top: 80px; }
+  .toc a { display: block; padding: 4px 0; font-size: 12px; color: var(--text-secondary); text-decoration: none; }
+  .toc a:hover { color: var(--blue); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>API Documentation</h1>
+  <p>Spesifikasi API bridging MidLab dengan Laboratory Information System (LIS)</p>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 220px;gap:24px">
+  <div class="card docs">
+    <div class="card-body">
+
+      <p>
+        Dokumen ini mendeskripsikan dua arah API antara MidLab dan LIS:
+      </p>
+      <ul>
+        <li><b>Order API</b> — LIS POST order pemeriksaan ke MidLab (<i>inbound</i>).</li>
+        <li><b>Result API</b> — MidLab POST hasil pemeriksaan ke LIS (<i>outbound</i>).</li>
+      </ul>
+      <p>
+        Untuk konfigurasi URL & API key, gunakan halaman
+        <a href="/settings">Settings</a>. URL Order API otomatis mengikuti IP server.
+      </p>
+
+      <hr>
+
+      <h2 id="order-api">1. Order API <small style="font-weight:400;font-size:13px;color:var(--text-secondary)">— LIS → MidLab</small></h2>
+
+      <p>Endpoint yang harus dipanggil LIS untuk mengirim order pemeriksaan ke alat lab.</p>
+
+      <h3>1.1 Base URL</h3>
+      <pre id="base-url">Memuat...</pre>
+      <p class="text-muted text-xs">URL di atas otomatis mengikuti IP server MidLab. Jangan hardcode di sisi LIS — selalu konfirmasi via halaman Settings.</p>
+
+      <h3>1.2 Authentication</h3>
+      <p>
+        Jika <code>order_receiver.api_key</code> di-set di <code>/etc/midlab/config.yaml</code>,
+        setiap request wajib menyertakan header <code>X-API-Key: &lt;key&gt;</code>.
+        Tanpa key yang benar, server merespon <code>401 Unauthorized</code>.
+        Jika config kosong, autentikasi di-skip (development mode).
+      </p>
+
+      <h3>1.3 Endpoints</h3>
+
+      <p><span class="method POST">POST</span> <code>/api/orders</code> — Buat order baru</p>
+
+      <p><b>Headers</b></p>
+      <pre>Content-Type: application/json
+X-API-Key: &lt;your-key&gt;     # wajib jika api_key di-config</pre>
+
+      <p><b>Request Body (JSON)</b></p>
+      <pre>{
+  "mid_version": "1.0",
+  "order_id": "ORD-12345",            // ID order dari LIS
+  "instrument_id": 1,                  // FK ke tbl_instrument.id
+  "request_datetime": "2026-05-13T10:30:00+00:00",
+  "patient": {
+    "patient_id": "PAT001",
+    "name": "John Doe",
+    "dob": "19900515",                 // YYYYMMDD
+    "gender": "M"                       // M / F / U
+  },
+  "specimen": {
+    "sample_id": "SAMP001",
+    "sample_type": "Blood",
+    "priority": "R"                     // R = Routine, S = Stat
+  },
+  "tests": [
+    { "test_code": "WBC", "test_name": "White Blood Cell" },
+    { "test_code": "RBC", "test_name": "Red Blood Cell" }
+  ]
+}</pre>
+
+      <p><b>Response 201 — Order tersimpan</b></p>
+      <pre>{
+  "success": true,
+  "order_id": 42                       // ID di tbl_order MidLab
+}</pre>
+
+      <p><b>Response Errors</b></p>
+      <table>
+        <thead><tr><th>Status</th><th>Arti</th><th>Action</th></tr></thead>
+        <tbody>
+          <tr><td>400</td><td>Body invalid (instrument_id ≤ 0 atau schema salah)</td><td>Cek field <code>detail</code>, perbaiki request</td></tr>
+          <tr><td>401</td><td>X-API-Key salah / hilang</td><td>Cek API key dengan tim MidLab</td></tr>
+          <tr><td>404</td><td>instrument_id tidak ada di MidLab</td><td>Daftarkan dulu instrument via Web Console</td></tr>
+          <tr><td>500</td><td>DB error</td><td>Retry; jika tetap gagal hubungi tim MidLab</td></tr>
+        </tbody>
+      </table>
+
+      <p><span class="method GET">GET</span> <code>/api/orders/{order_id}</code> — Cek status order</p>
+      <pre>{
+  "id": 42,
+  "instrument_id": 1,
+  "instrument_status": "sent",         // pending / sent / failed
+  "retry_count": 0,
+  "failed_at_service": null,
+  "error_message": null,
+  "created_at": "2026-05-13T10:30:01+00:00",
+  "sent_to_instrument_at": "2026-05-13T10:30:45+00:00",
+  "order_json": { ... }                // echo back order asli
+}</pre>
+
+      <p><span class="method GET">GET</span> <code>/api/health</code> — Health check</p>
+      <pre>{ "status": "ok", "service": "order_receiver" }</pre>
+
+      <h3>1.4 Status Order</h3>
+      <ul>
+        <li><code>pending</code> — Tersimpan, menunggu dikirim ke alat oleh TCPSocketService.</li>
+        <li><code>sent</code> — Sudah terkirim ke alat (alat menerima order).</li>
+        <li><code>failed</code> — Gagal kirim. Cek <code>failed_at_service</code> dan <code>error_message</code>.</li>
+      </ul>
+
+      <h3>1.5 Contoh curl</h3>
+      <pre id="curl-example">Memuat...</pre>
+
+      <hr>
+
+      <h2 id="result-api">2. Result API <small style="font-weight:400;font-size:13px;color:var(--text-secondary)">— MidLab → LIS</small></h2>
+
+      <p>
+        MidLab akan POST hasil pemeriksaan ke endpoint LIS sesuai konfigurasi di halaman
+        <a href="/settings">Settings</a>. Tim LIS perlu menyediakan endpoint yang
+        menerima struktur berikut.
+      </p>
+
+      <h3>2.1 Kontrak Endpoint LIS</h3>
+      <p>LIS harus menyediakan endpoint <code>POST &lt;your-url&gt;</code> yang:</p>
+      <ul>
+        <li>Menerima <code>Content-Type: application/json</code>.</li>
+        <li>Menerima header <code>X-API-Key: &lt;key&gt;</code> jika di-set di MidLab.</li>
+        <li>Return <code>2xx</code> bila result diterima &amp; valid → MidLab tandai <code>send_status='sent'</code>.</li>
+        <li>Return <code>4xx/5xx</code> bila tolak → MidLab tandai <code>send_status='failed'</code> dan retry sesuai <code>retry_max</code> di config (default 3x).</li>
+      </ul>
+
+      <h3>2.2 Schema Result (yang MidLab kirim)</h3>
+      <pre>{
+  "mid_version": "1.0",
+  "instrument_id": 1,
+  "protocol": "ASTM",                  // ASTM / HL7 / COBAS_C111
+  "message_id": "uuid-v4",
+  "message_datetime": "2026-05-13T10:35:22+00:00",
+  "patient": {
+    "patient_id": "PAT001",
+    "name": "John Doe",
+    "dob": "19900515",
+    "gender": "M",
+    "physician": "Dr. Smith"
+  },
+  "specimen": {
+    "sample_id": "SAMP001",
+    "sample_type": "Blood",
+    "collected_at": "20260513093000"
+  },
+  "order": {
+    "order_id": "ORD-12345",
+    "panel": "CBC"
+  },
+  "results": [
+    {
+      "test_code": "WBC",
+      "test_name": "White Blood Cell",
+      "value": "5.2",
+      "unit": "10^3/uL",
+      "reference_range": "4.0-10.0",
+      "flag": "N",                     // N / H / L / A / <  / >
+      "status": "F"                    // F=Final, P=Preliminary, C=Correction
+    }
+  ],
+  "comments": [
+    "result[WBC]: Sol1: F Dev"
+  ],
+  "parse_errors": []                   // kosong kalau parsing bersih
+}</pre>
+
+      <h3>2.3 Retry &amp; Error Handling</h3>
+      <ul>
+        <li>Default poll interval <code>5 detik</code> (configurable di <code>config.yaml: result_sender.poll_interval</code>).</li>
+        <li>Default <code>retry_max=3</code>. Setelah melebihi, result di-skip + log WARNING. Bisa di-retry manual dari halaman <a href="/results">Results</a>.</li>
+        <li>Connection error / timeout / non-2xx semua dianggap <code>failed</code> — pesan error disimpan di <code>tbl_result.error_message</code>.</li>
+      </ul>
+
+      <h3>2.4 Contoh Endpoint LIS (referensi)</h3>
+      <pre># LIS endpoint (pseudo-code)
+@POST /lis/api/results
+def receive_result(body, headers):
+    if headers.get('X-API-Key') != EXPECTED_KEY:
+        return 401, {"error": "invalid api key"}
+    try:
+        lab_id = save_to_lis_db(body)
+        return 200, {"success": True, "lis_id": lab_id}
+    except ValidationError as e:
+        return 400, {"error": str(e)}
+    except Exception:
+        return 500, {"error": "internal"}</pre>
+
+      <hr>
+
+      <h2 id="settings-api">3. Settings API <small style="font-weight:400;font-size:13px;color:var(--text-secondary)">— Internal</small></h2>
+
+      <p>API untuk Web Console mengelola konfigurasi bridging — biasanya tidak dipakai langsung dari LIS.</p>
+
+      <p><span class="method GET">GET</span> <code>/api/settings</code> — Ambil semua setting + auto-detect IP.</p>
+      <p><span class="method PUT">PUT</span> <code>/api/settings</code> — Update LIS URL/key.</p>
+      <p><span class="method POST">POST</span> <code>/api/settings/test-lis</code> — Test koneksi ke LIS.</p>
+
+      <hr>
+
+      <h2 id="security">4. Catatan Keamanan</h2>
+      <ul>
+        <li>Selalu gunakan <code>X-API-Key</code> di production — set <code>order_receiver.api_key</code> di config.yaml.</li>
+        <li>Untuk Result API: gunakan <code>https://</code> agar credential tidak bocor di network.</li>
+        <li>Pasang reverse proxy (nginx) di depan port 8000 dan 8001 untuk TLS termination.</li>
+        <li>Restrict akses port 8001 hanya dari IP LIS via firewall.</li>
+      </ul>
+
+      <hr>
+
+      <h2 id="versioning">5. Versioning</h2>
+      <p>
+        Field <code>mid_version</code> di setiap payload (request &amp; response) menunjukkan
+        versi schema MidLab. Saat ini <code>"1.0"</code>. Perubahan breaking akan bump
+        ke <code>"2.0"</code> dengan endpoint baru (<code>/v2/api/...</code>) — versi lama
+        tetap di-maintain minimal 6 bulan.
+      </p>
+
+    </div>
+  </div>
+
+  <!-- TOC -->
+  <div>
+    <div class="card toc">
+      <div class="card-body" style="padding:14px">
+        <div class="text-xs text-muted" style="text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:600">Daftar Isi</div>
+        <a href="#order-api">1. Order API</a>
+        <a href="#result-api">2. Result API</a>
+        <a href="#settings-api">3. Settings API</a>
+        <a href="#security">4. Keamanan</a>
+        <a href="#versioning">5. Versioning</a>
+        <hr style="margin:8px 0;border:none;border-top:1px solid var(--border-color)">
+        <a href="/docs" target="_blank">FastAPI /docs ↗</a>
+        <a href="/openapi.json" target="_blank">OpenAPI JSON ↗</a>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  async function loadDynamicUrls() {
+    try {
+      const s = await App.api('/api/settings');
+      document.getElementById('base-url').textContent = s.order_api_url;
+
+      const payload = {
+        mid_version: "1.0",
+        order_id: "ORD-12345",
+        instrument_id: 1,
+        request_datetime: "2026-05-13T10:30:00+00:00",
+        patient: { patient_id: "PAT001", name: "John Doe", dob: "19900515", gender: "M" },
+        specimen: { sample_id: "SAMP001", sample_type: "Blood", priority: "R" },
+        tests: [{ test_code: "WBC", test_name: "White Blood Cell" }]
+      };
+      const lines = [
+        `curl -X POST '${s.order_api_url}' \\`,
+        `  -H 'Content-Type: application/json' \\`,
+      ];
+      if (s.order_api_key_set) {
+        lines.push(`  -H 'X-API-Key: <YOUR_KEY>' \\`);
+      }
+      lines.push(`  -d '${JSON.stringify(payload, null, 2)}'`);
+      document.getElementById('curl-example').textContent = lines.join('\n');
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  loadDynamicUrls();
+})();
+</script>
+{% endblock %}

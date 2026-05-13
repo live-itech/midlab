@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% block title %}Settings — LIS Bridging{% endblock %}
+{% block topbar_title %}Settings — LIS Bridging{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Settings — LIS Bridging</h1>
+  <p>Konfigurasi endpoint API antara MidLab dan Laboratory Information System</p>
+</div>
+
+<!-- ===== ORDER API (LIS → MidLab) ===== -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h2>Order API — LIS kirim order ke MidLab</h2>
+    <span class="badge badge-blue">Inbound · Static</span>
+  </div>
+  <div class="card-body">
+    <p class="text-sm text-muted mb-3">
+      URL endpoint yang diberikan ke tim LIS. Otomatis mengikuti IP server tempat
+      MidLab di-deploy — tidak perlu diubah manual saat pindah server.
+    </p>
+
+    <div class="form-group">
+      <label class="form-label">Endpoint URL (read-only)</label>
+      <div class="d-flex gap-2 items-center">
+        <input type="text" class="form-input font-mono" id="order-api-url" readonly>
+        <button class="btn btn-ghost btn-sm" onclick="copyOrderUrl()">Copy</button>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Method</label>
+        <input type="text" class="form-input font-mono" value="POST" readonly>
+      </div>
+      <div class="form-group">
+        <label class="form-label">API Key Auth</label>
+        <input type="text" class="form-input" id="order-auth-status" readonly>
+      </div>
+    </div>
+
+    <details class="mt-2">
+      <summary style="cursor:pointer;color:var(--blue);font-size:13px;font-weight:600">Lihat contoh request (curl)</summary>
+      <pre class="json-viewer mt-2" id="curl-example"></pre>
+    </details>
+  </div>
+</div>
+
+<!-- ===== RESULT API (MidLab → LIS) ===== -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h2>Result API — MidLab kirim hasil ke LIS</h2>
+    <span class="badge badge-orange">Outbound · Editable</span>
+  </div>
+  <div class="card-body">
+    <p class="text-sm text-muted mb-3">
+      URL endpoint LIS yang MidLab pakai untuk POST hasil pemeriksaan.
+      Perubahan langsung di-apply oleh ResultSenderService (auto-reload per cycle,
+      tidak perlu restart service).
+    </p>
+
+    <div class="form-group">
+      <label class="form-label">LIS API URL</label>
+      <input type="text" class="form-input font-mono" id="lis-api-url"
+             placeholder="https://lis.hospital.id/api/results">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">
+        LIS API Key
+        <span class="text-muted text-xs" id="lis-key-status"></span>
+      </label>
+      <input type="password" class="form-input font-mono" id="lis-api-key"
+             placeholder="Biarkan kosong = tidak ubah · Hapus & save = clear">
+    </div>
+
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-primary" onclick="saveSettings()">Simpan</button>
+      <button class="btn btn-ghost" onclick="testLis()">Test Connection</button>
+      <button class="btn btn-ghost" onclick="loadSettings()">Reload</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== INFO ===== -->
+<div class="card">
+  <div class="card-header"><h2>Diagnostic</h2></div>
+  <div class="card-body">
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Local IP Server</label>
+        <input type="text" class="form-input font-mono" id="local-ip" readonly>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Storage Override</label>
+        <input type="text" class="form-input" value="tbl_settings (DB) override config.yaml" readonly>
+      </div>
+    </div>
+    <p class="text-xs text-muted mt-2">
+      Untuk dokumentasi lengkap API (schema, contoh, error codes) — lihat
+      <a href="/api-docs">API Docs</a>.
+    </p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  let current = null;
+
+  window.loadSettings = async function() {
+    try {
+      current = await App.api('/api/settings');
+      document.getElementById('order-api-url').value = current.order_api_url;
+      document.getElementById('order-auth-status').value =
+        current.order_api_key_set
+          ? 'Aktif (X-API-Key header wajib)'
+          : 'Tidak aktif (config.yaml: order_receiver.api_key kosong)';
+      document.getElementById('lis-api-url').value = current.lis_api_url || '';
+      document.getElementById('lis-api-key').value = '';
+      document.getElementById('lis-api-key').placeholder = current.lis_api_key_set
+        ? `Tersimpan (${current.lis_api_key_masked}) — kosongkan = tidak diubah`
+        : 'Belum di-set';
+      document.getElementById('lis-key-status').textContent = current.lis_api_key_set
+        ? `· tersimpan: ${current.lis_api_key_masked}` : '';
+      document.getElementById('local-ip').value = current.local_ip;
+      renderCurlExample();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  function renderCurlExample() {
+    const url = current.order_api_url;
+    const hasKey = current.order_api_key_set;
+    const payload = {
+      mid_version: "1.0",
+      order_id: "ORD-001",
+      instrument_id: 1,
+      request_datetime: "2026-05-13T10:30:00+00:00",
+      patient: { patient_id: "PAT001", name: "John Doe", dob: "19900515", gender: "M" },
+      specimen: { sample_id: "SAMP001", sample_type: "Blood", priority: "R" },
+      tests: [{ test_code: "WBC", test_name: "White Blood Cell" }]
+    };
+    const lines = [
+      `curl -X POST '${url}' \\`,
+      `  -H 'Content-Type: application/json' \\`,
+    ];
+    if (hasKey) {
+      lines.push(`  -H 'X-API-Key: <YOUR_KEY>' \\`);
+    }
+    lines.push(`  -d '${JSON.stringify(payload, null, 2).split('\n').join('\n')}'`);
+    document.getElementById('curl-example').textContent = lines.join('\n');
+  }
+
+  window.copyOrderUrl = function() {
+    const url = document.getElementById('order-api-url').value;
+    navigator.clipboard.writeText(url).then(
+      () => App.toast('URL Order API disalin ke clipboard', 'success'),
+      () => App.toast('Gagal menyalin', 'error')
+    );
+  };
+
+  window.saveSettings = async function() {
+    const body = {
+      lis_api_url: document.getElementById('lis-api-url').value.trim(),
+    };
+    const keyInput = document.getElementById('lis-api-key').value;
+    // Hanya kirim lis_api_key kalau user mengetik sesuatu
+    if (keyInput !== '') {
+      body.lis_api_key = keyInput;
+    }
+    try {
+      await App.api('/api/settings', { method: 'PUT', body });
+      App.toast('Settings tersimpan — ResultSender akan auto-reload', 'success');
+      loadSettings();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  window.testLis = async function() {
+    const url = document.getElementById('lis-api-url').value.trim();
+    const keyInput = document.getElementById('lis-api-key').value;
+    const body = {};
+    if (url) body.lis_api_url = url;
+    if (keyInput !== '') body.lis_api_key = keyInput;
+    try {
+      const res = await App.api('/api/settings/test-lis', { method: 'POST', body });
+      App.toast(res.message, 'success');
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  loadSettings();
+})();
+</script>
+{% endblock %}

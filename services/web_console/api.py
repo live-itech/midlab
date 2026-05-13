@@ -38,9 +38,13 @@ from lib.db import (
     TblResult,
     TblOrder,
     TblServiceLog,
+    get_all_settings,
+    get_setting,
+    set_setting,
     update_result_status,
     update_order_status,
 )
+from lib.network import get_local_ip
 from lib.utils import get_logger
 from protocols.base import _PROTOCOL_REGISTRY
 
@@ -97,6 +101,14 @@ async def page_services(request: Request):
 async def page_logs(request: Request):
     return _templates.TemplateResponse(request, "logs.html", {"active_page": "logs"})
 
+@app.get("/settings", response_class=HTMLResponse)
+async def page_settings(request: Request):
+    return _templates.TemplateResponse(request, "settings.html", {"active_page": "settings"})
+
+@app.get("/api-docs", response_class=HTMLResponse)
+async def page_api_docs(request: Request):
+    return _templates.TemplateResponse(request, "api_docs.html", {"active_page": "api_docs"})
+
 @app.get("/results", response_class=HTMLResponse)
 async def page_results(request: Request):
     return _templates.TemplateResponse(request, "results.html", {"active_page": "results"})
@@ -112,6 +124,15 @@ watchdog: ServiceWatchdog | None = None
 @app.on_event("startup")
 async def _startup():
     global watchdog
+
+    # Pastikan semua tabel ada (idempotent — create_all_tables hanya create
+    # tabel yang belum ada). Diperlukan agar tbl_settings tersedia di
+    # deployment lama yang belum punya tabel ini.
+    try:
+        DBManager().create_all_tables()
+    except Exception as e:
+        logger.warning(f"create_all_tables gagal saat startup: {e}")
+
     watchdog = ServiceWatchdog()
     watchdog.ensure_core_services()
 
@@ -547,6 +568,181 @@ async def list_protocols(x_api_key: str = Header(None)):
         ProtocolResponse(name=name, module_path=path)
         for name, path in _PROTOCOL_REGISTRY.items()
     ]
+
+
+# ============================================================
+# [Settings] — LIS bridging configuration
+# ============================================================
+
+class SettingsResponse(BaseModel):
+    """
+    Settings bridging MidLab ↔ LIS.
+
+    - order_api_url: URL endpoint MidLab yang dipakai LIS untuk POST order
+                     (auto-detect dari IP server, read-only).
+    - order_api_key: API key untuk Order Receiver (set via config.yaml,
+                     read-only di sini — keamanan; key tidak dikirim ke
+                     UI dalam bentuk plaintext).
+    - order_api_key_set: True jika api_key Order Receiver di-config.
+    - lis_api_url: URL LIS REST API untuk POST hasil (editable).
+    - lis_api_key_masked: API key LIS (di-mask, hanya 4 char terakhir).
+    - lis_api_key_set: True jika lis_api_key sudah di-set.
+    - local_ip: IP LAN aktif server (untuk diagnostic).
+    """
+    order_api_url: str
+    order_api_key_set: bool
+    lis_api_url: str
+    lis_api_key_masked: str
+    lis_api_key_set: bool
+    local_ip: str
+
+
+class SettingsUpdateRequest(BaseModel):
+    """Body PUT /api/settings — kosong / null = jangan ubah field tsb."""
+    lis_api_url: Optional[str] = None
+    # Kirim string kosong "" untuk hapus key; null untuk tidak ubah
+    lis_api_key: Optional[str] = None
+
+
+class LisTestRequest(BaseModel):
+    """Body POST /api/settings/test-lis — opsional override URL/key untuk dry-run."""
+    lis_api_url: Optional[str] = None
+    lis_api_key: Optional[str] = None
+
+
+def _mask_key(key: str) -> str:
+    """Mask API key — tampilkan hanya 4 karakter terakhir."""
+    if not key:
+        return ""
+    if len(key) <= 4:
+        return "*" * len(key)
+    return "*" * (len(key) - 4) + key[-4:]
+
+
+def _build_settings_response() -> SettingsResponse:
+    """Assemble SettingsResponse dari DB + config + auto-detect IP."""
+    config = Config()
+    local_ip = get_local_ip()
+    order_port = config.get("order_receiver.port", 8001)
+    order_api_key = config.get("order_receiver.api_key", "") or ""
+
+    # LIS settings: DB override → config.yaml fallback
+    lis_url = (
+        get_setting("lis.api_url", default=None)
+        or config.get("lis.api_url", "")
+        or ""
+    )
+    lis_key = (
+        get_setting("lis.api_key", default=None)
+        or config.get("lis.api_key", "")
+        or ""
+    )
+
+    return SettingsResponse(
+        order_api_url=f"http://{local_ip}:{order_port}/api/orders",
+        order_api_key_set=bool(order_api_key),
+        lis_api_url=lis_url,
+        lis_api_key_masked=_mask_key(lis_key),
+        lis_api_key_set=bool(lis_key),
+        local_ip=local_ip,
+    )
+
+
+@app.get("/api/settings", response_model=SettingsResponse)
+async def get_settings(x_api_key: str = Header(None)):
+    """
+    Ambil settings bridging LIS.
+
+    `order_api_url` di-generate dari IP LAN server saat ini — jika MidLab
+    di-deploy di server lain, URL akan otomatis menyesuaikan.
+    """
+    _verify_api_key(x_api_key)
+    return _build_settings_response()
+
+
+@app.put("/api/settings", response_model=SettingsResponse)
+async def update_settings(
+    body: SettingsUpdateRequest,
+    x_api_key: str = Header(None),
+):
+    """
+    Update LIS API URL & key. Disimpan di tbl_settings (override config.yaml).
+    Field yang null tidak diubah; string kosong "" akan menghapus override
+    (kembali pakai value dari config.yaml).
+
+    ResultSenderService auto-reload settings ini setiap poll cycle —
+    tidak perlu restart service.
+    """
+    _verify_api_key(x_api_key)
+
+    if body.lis_api_url is not None:
+        url = body.lis_api_url.strip()
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            raise HTTPException(400, "lis_api_url harus dimulai http:// atau https://")
+        ok = set_setting("lis.api_url", url)
+        if not ok:
+            raise HTTPException(500, "Gagal simpan lis.api_url")
+        logger.info(f"Setting lis.api_url updated: {url or '(cleared)'}")
+
+    if body.lis_api_key is not None:
+        ok = set_setting("lis.api_key", body.lis_api_key)
+        if not ok:
+            raise HTTPException(500, "Gagal simpan lis.api_key")
+        logger.info("Setting lis.api_key updated")
+
+    return _build_settings_response()
+
+
+@app.post("/api/settings/test-lis", response_model=MessageResponse)
+async def test_lis_connection(
+    body: LisTestRequest,
+    x_api_key: str = Header(None),
+):
+    """
+    Test koneksi ke LIS API: POST dummy payload, return status.
+
+    URL & key dari body kalau diisi (untuk preview sebelum save), kalau
+    tidak pakai value yang tersimpan di DB/config.
+    """
+    _verify_api_key(x_api_key)
+
+    config = Config()
+    url = body.lis_api_url or get_setting("lis.api_url") or config.get("lis.api_url", "")
+    key = body.lis_api_key if body.lis_api_key is not None else (
+        get_setting("lis.api_key") or config.get("lis.api_key", "")
+    )
+
+    if not url:
+        raise HTTPException(400, "lis.api_url belum di-set")
+
+    import aiohttp
+
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["X-API-Key"] = key
+
+    # Dummy payload — LIS yang well-behaved akan return 4xx (validasi),
+    # tapi kalau bisa konek + parse JSON, koneksi dianggap OK.
+    probe = {"mid_version": "1.0", "_probe": True, "instrument_id": 0}
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json=probe, headers=headers) as resp:
+                status = resp.status
+                if 200 <= status < 500:
+                    # 2xx atau 4xx → endpoint reachable & parse JSON OK
+                    return MessageResponse(
+                        success=True,
+                        message=f"Koneksi OK — LIS merespon HTTP {status}",
+                    )
+                raise HTTPException(502, f"LIS error: HTTP {status}")
+    except aiohttp.ClientConnectorError as e:
+        raise HTTPException(502, f"Tidak bisa konek ke LIS: {e}")
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "Timeout konek ke LIS (10s)")
+    except aiohttp.ClientError as e:
+        raise HTTPException(502, f"LIS error: {e}")
 
 
 # ============================================================

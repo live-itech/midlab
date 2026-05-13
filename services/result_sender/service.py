@@ -22,8 +22,13 @@ import sys
 import aiohttp
 
 from lib.config import Config
-from lib.db import get_pending_results, update_result_status
+from lib.db import get_pending_results, get_setting, update_result_status
 from lib.utils import get_logger
+
+
+# Kunci settings di tbl_settings (override config.yaml jika di-set via Web Console)
+SETTING_LIS_URL = "lis.api_url"
+SETTING_LIS_KEY = "lis.api_key"
 
 
 class ResultSenderService:
@@ -50,8 +55,13 @@ class ResultSenderService:
         self._batch_size = config.get("result_sender.batch_size", 50)
         self._timeout = config.get("result_sender.timeout", 30)
 
-        self._lis_url = config.get("lis.api_url", "")
-        self._lis_api_key = config.get("lis.api_key", "")
+        # Fallback values dari config.yaml (dipakai bila tbl_settings kosong)
+        self._lis_url_fallback = config.get("lis.api_url", "")
+        self._lis_api_key_fallback = config.get("lis.api_key", "")
+
+        # Effective values — di-refresh tiap poll cycle dari tbl_settings
+        self._lis_url = self._lis_url_fallback
+        self._lis_api_key = self._lis_api_key_fallback
 
         self._logger = get_logger("result_sender")
         self._running = False
@@ -70,17 +80,21 @@ class ResultSenderService:
         """Start service: setup signal, masuk poll loop."""
         self._running = True
 
+        # Pre-load settings dari DB sebelum loop dimulai (untuk log startup)
+        self._refresh_lis_settings(log_change=False)
+
         self._logger.info(
             f"ResultSenderService starting — "
             f"poll_interval={self._poll_interval}s, "
             f"retry_max={self._retry_max}, "
-            f"lis_url={self._lis_url}"
+            f"lis_url={self._lis_url or '(belum diset)'}"
         )
 
         if not self._lis_url:
-            self._logger.error("lis.api_url tidak dikonfigurasi di config.yaml")
-            print("ERROR: lis.api_url belum diset di config.yaml", file=sys.stderr)
-            return
+            self._logger.warning(
+                "lis.api_url belum diset (tbl_settings dan config.yaml kosong) — "
+                "poll loop tetap jalan, set via Web Console /settings"
+            )
 
         # Setup signal handlers
         loop = asyncio.get_running_loop()
@@ -140,8 +154,34 @@ class ResultSenderService:
                     # Timeout = interval selesai, lanjut poll
                     pass
 
+    def _refresh_lis_settings(self, log_change: bool = True):
+        """
+        Refresh LIS URL & API key dari tbl_settings (fallback ke config.yaml).
+        Dipanggil tiap poll cycle agar perubahan dari Web Console langsung
+        di-apply tanpa restart service.
+        """
+        new_url = get_setting(SETTING_LIS_URL, default=self._lis_url_fallback) or ""
+        new_key = get_setting(SETTING_LIS_KEY, default=self._lis_api_key_fallback) or ""
+
+        if log_change and new_url != self._lis_url:
+            self._logger.info(
+                f"LIS URL berubah: {self._lis_url or '(kosong)'} → "
+                f"{new_url or '(kosong)'}"
+            )
+        self._lis_url = new_url
+        self._lis_api_key = new_key
+
     async def _poll_and_send(self, session: aiohttp.ClientSession):
-        """Satu cycle: ambil pending results, kirim satu per satu."""
+        """Satu cycle: refresh settings, ambil pending results, kirim satu per satu."""
+        # Refresh settings dulu — operator bisa ubah URL/key via Web Console
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._refresh_lis_settings
+        )
+
+        if not self._lis_url:
+            # Settings kosong — skip cycle (akan retry di poll berikutnya)
+            return
+
         results = await asyncio.get_event_loop().run_in_executor(
             None, get_pending_results, self._batch_size
         )
