@@ -82,6 +82,50 @@
   </div>
 </div>
 
+<!-- ===== LIS BRIDGING (EazyApp) ===== -->
+<div class="card mb-4">
+  <div class="card-header">
+    <h2>LIS Bridging (EazyApp)</h2>
+    <p class="text-xs text-muted">Konfigurasi global LisBridgeService. Per-alat API key di-set di halaman Instruments.</p>
+  </div>
+  <div class="card-body">
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">LIS Base URL</label>
+        <input type="url" class="form-input font-mono" id="lis-base-url"
+               placeholder="https://eazy.vespahobby.xyz">
+      </div>
+      <div class="form-group">
+        <label class="form-label">HTTP Timeout (detik)</label>
+        <input type="number" class="form-input" id="lis-http-timeout" min="1" value="30">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Retry Max</label>
+        <input type="number" class="form-input" id="lis-retry-max" min="1" max="10" value="3">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Result Poll (detik)</label>
+        <input type="number" class="form-input" id="lis-result-poll" min="1" value="5">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Status Poll (detik)</label>
+        <input type="number" class="form-input" id="lis-status-poll" min="1" value="2">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Log Poll (detik)</label>
+        <input type="number" class="form-input" id="lis-log-poll" min="1" value="5">
+      </div>
+    </div>
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-primary" onclick="saveBridgeSettings()">Simpan LIS Bridging</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== INFO ===== -->
 <div class="card">
   <div class="card-header"><h2>Diagnostic</h2></div>
@@ -125,6 +169,12 @@
       document.getElementById('lis-key-status').textContent = current.lis_api_key_set
         ? `· tersimpan: ${current.lis_api_key_masked}` : '';
       document.getElementById('local-ip').value = current.local_ip;
+      document.getElementById('lis-base-url').value = current.lis_base_url || '';
+      document.getElementById('lis-http-timeout').value = current.lis_http_timeout || 30;
+      document.getElementById('lis-retry-max').value = current.lis_retry_max || 3;
+      document.getElementById('lis-result-poll').value = current.lis_result_poll_interval || 5;
+      document.getElementById('lis-status-poll').value = current.lis_status_poll_interval || 2;
+      document.getElementById('lis-log-poll').value = current.lis_log_poll_interval || 5;
       renderCurlExample();
     } catch (err) {
       App.toast(err.message, 'error');
@@ -189,6 +239,24 @@
     try {
       const res = await App.api('/api/settings/test-lis', { method: 'POST', body });
       App.toast(res.message, 'success');
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  };
+
+  window.saveBridgeSettings = async function() {
+    const body = {
+      lis_base_url: document.getElementById('lis-base-url').value.trim(),
+      lis_http_timeout: parseInt(document.getElementById('lis-http-timeout').value) || 30,
+      lis_retry_max: parseInt(document.getElementById('lis-retry-max').value) || 3,
+      lis_result_poll_interval: parseInt(document.getElementById('lis-result-poll').value) || 5,
+      lis_status_poll_interval: parseInt(document.getElementById('lis-status-poll').value) || 2,
+      lis_log_poll_interval: parseInt(document.getElementById('lis-log-poll').value) || 5,
+    };
+    try {
+      await App.api('/api/settings', { method: 'PUT', body });
+      App.toast('LIS Bridging settings tersimpan', 'success');
+      loadSettings();
     } catch (err) {
       App.toast(err.message, 'error');
     }

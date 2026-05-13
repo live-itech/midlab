@@ -667,6 +667,13 @@ class SettingsResponse(BaseModel):
     lis_api_key_masked: str
     lis_api_key_set: bool
     local_ip: str
+    # LIS Bridging (EazyApp) — global settings
+    lis_base_url: str = ""
+    lis_http_timeout: int = 30
+    lis_retry_max: int = 3
+    lis_result_poll_interval: int = 5
+    lis_status_poll_interval: int = 2
+    lis_log_poll_interval: int = 5
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -674,6 +681,13 @@ class SettingsUpdateRequest(BaseModel):
     lis_api_url: Optional[str] = None
     # Kirim string kosong "" untuk hapus key; null untuk tidak ubah
     lis_api_key: Optional[str] = None
+    # LIS Bridging (EazyApp) global settings
+    lis_base_url: Optional[str] = None
+    lis_http_timeout: Optional[int] = None
+    lis_retry_max: Optional[int] = None
+    lis_result_poll_interval: Optional[int] = None
+    lis_status_poll_interval: Optional[int] = None
+    lis_log_poll_interval: Optional[int] = None
 
 
 class LisTestRequest(BaseModel):
@@ -710,6 +724,13 @@ def _build_settings_response() -> SettingsResponse:
         or ""
     )
 
+    def _int_setting(key, default):
+        v = get_setting(key, default=None)
+        try:
+            return int(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+
     return SettingsResponse(
         order_api_url=f"http://{local_ip}:{order_port}/api/orders",
         order_api_key_set=bool(order_api_key),
@@ -717,6 +738,12 @@ def _build_settings_response() -> SettingsResponse:
         lis_api_key_masked=_mask_key(lis_key),
         lis_api_key_set=bool(lis_key),
         local_ip=local_ip,
+        lis_base_url=get_setting("lis.base_url", default="") or "",
+        lis_http_timeout=_int_setting("lis.http_timeout", 30),
+        lis_retry_max=_int_setting("lis.retry_max", 3),
+        lis_result_poll_interval=_int_setting("lis.result_poll_interval", 5),
+        lis_status_poll_interval=_int_setting("lis.status_poll_interval", 2),
+        lis_log_poll_interval=_int_setting("lis.log_poll_interval", 5),
     )
 
 
@@ -761,6 +788,24 @@ async def update_settings(
         if not ok:
             raise HTTPException(500, "Gagal simpan lis.api_key")
         logger.info("Setting lis.api_key updated")
+
+    # LIS Bridging (EazyApp) global settings
+    if body.lis_base_url is not None:
+        url = body.lis_base_url.strip()
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            raise HTTPException(400, "lis_base_url harus dimulai http:// atau https://")
+        set_setting("lis.base_url", url)
+        logger.info(f"Setting lis.base_url updated: {url or '(cleared)'}")
+    for field, key in (
+        ("lis_http_timeout", "lis.http_timeout"),
+        ("lis_retry_max", "lis.retry_max"),
+        ("lis_result_poll_interval", "lis.result_poll_interval"),
+        ("lis_status_poll_interval", "lis.status_poll_interval"),
+        ("lis_log_poll_interval", "lis.log_poll_interval"),
+    ):
+        v = getattr(body, field)
+        if v is not None:
+            set_setting(key, str(v))
 
     return _build_settings_response()
 
