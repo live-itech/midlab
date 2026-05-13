@@ -289,10 +289,12 @@ def update_result_status(
     result_id: int,
     status: str,
     error_message: str = None,
+    *,
+    increment_retry: bool = False,
 ):
     """
     Update send_status di tbl_result.
-    Owned by ResultSenderService.
+    Owned by ResultSenderService / LisBridgeService.ResultPusher.
     """
     db = DBManager()
     session = db.get_session()
@@ -301,11 +303,14 @@ def update_result_status(
         if result is None:
             return False
         result.send_status = status
+        if error_message is not None:
+            result.error_message = error_message
         if status == "sent":
             result.sent_at = datetime.now(timezone.utc)
         if status == "failed":
             result.retry_count = (result.retry_count or 0) + 1
-            result.error_message = error_message
+        elif increment_retry:
+            result.retry_count = (result.retry_count or 0) + 1
         session.commit()
         return True
     except Exception:
