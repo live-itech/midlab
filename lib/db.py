@@ -461,6 +461,39 @@ def save_order(instrument_id: int, order_json: dict) -> int | None:
         session.close()
 
 
+def get_instrument_by_id(instrument_id: int):
+    """Ambil row TblInstrument by id, atau None."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        return session.query(TblInstrument).filter(
+            TblInstrument.id == instrument_id
+        ).first()
+    finally:
+        session.close()
+
+
+def update_instrument_lis_sync(instrument_id: int, lis_instrument_id: str) -> bool:
+    """Update lis_instrument_id + last_lis_sync_at di TblInstrument."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        row = session.query(TblInstrument).filter(
+            TblInstrument.id == instrument_id
+        ).first()
+        if not row:
+            return False
+        row.lis_instrument_id = lis_instrument_id
+        row.last_lis_sync_at = datetime.now(timezone.utc)
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
 def get_log_cursor(instrument_id: int):
     """Ambil cursor terakhir log yang sudah di-push ke LIS."""
     raw = get_setting(f"lis.log_cursor.{instrument_id}")
