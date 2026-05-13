@@ -357,6 +357,18 @@ class ServiceWatchdog:
         if service_name == "order_receiver":
             return [PYTHON, "-m", "services.order_receiver.main"]
 
+        if service_name.startswith("lis_bridge_"):
+            iid = instrument_id
+            if iid is None:
+                try:
+                    iid = int(service_name.split("_", 2)[2])
+                except (IndexError, ValueError):
+                    return None
+            return [
+                PYTHON, "-m", "services.lis_bridge.main",
+                "--instrument-id", str(iid),
+            ]
+
         if service_name.startswith("tcp_"):
             # tcp_<instrument_id>
             iid = instrument_id
