@@ -62,6 +62,14 @@ class TblInstrument(Base):
     )
     is_active = Column(Boolean, default=True)
 
+    # LIS bridging columns (lihat docs/superpowers/specs/2026-05-13-lis-bridging-eazyapp-design.md)
+    lis_instrument_id   = Column(String(50),  nullable=True)
+    lis_api_key         = Column(String(255), nullable=True)
+    order_poll_interval = Column(Integer,     default=10)
+    last_lis_sync_at    = Column(DateTime,    nullable=True)
+    lis_status_pushed   = Column(String(20),  nullable=True)
+    lis_bridge_enabled  = Column(Boolean,     default=False)
+
 
 class TblResult(Base):
     """Tabel hasil pemeriksaan dari alat, dikirim ke LIS oleh ResultSenderService."""
@@ -134,6 +142,33 @@ class TblSetting(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class TblLisEventQueue(Base):
+    """
+    Antrian event yang dikirim ke LIS via REST API.
+    Penulis: TCPSocketService (status events on connect/disconnect/error).
+    Pembaca: LisBridgeService.StatusReporter.
+    Handoff flag-based sesuai rule CLAUDE.md.
+    """
+    __tablename__ = "tbl_lis_event_queue"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    instrument_id = Column(Integer, nullable=False)
+    event_type    = Column(
+        Enum("status", "log", name="lis_event_type_enum"),
+        nullable=False,
+    )
+    payload_json  = Column(JSON, nullable=False)
+    send_status   = Column(
+        Enum("pending", "sent", "failed", "skipped", name="lis_event_status_enum"),
+        nullable=False,
+        default="pending",
+    )
+    retry_count   = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    sent_at       = Column(DateTime, nullable=True)
 
 
 # ============================================================
@@ -417,5 +452,87 @@ def save_order(instrument_id: int, order_json: dict) -> int | None:
     except Exception:
         session.rollback()
         return None
+    finally:
+        session.close()
+
+
+def enqueue_lis_event(instrument_id: int, event_type: str, payload: dict) -> int | None:
+    """
+    Tambahkan event ke tbl_lis_event_queue dengan status pending.
+    Dipanggil oleh TCPSocketService saat ada perubahan status koneksi.
+    Returns: ID record baru atau None jika gagal.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        ev = TblLisEventQueue(
+            instrument_id=instrument_id,
+            event_type=event_type,
+            payload_json=payload,
+            send_status="pending",
+        )
+        session.add(ev)
+        session.commit()
+        return ev.id
+    except Exception:
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
+def get_pending_lis_events(
+    instrument_id: int,
+    event_type: str | None = None,
+    limit: int = 50,
+) -> list:
+    """
+    Ambil event pending dari tbl_lis_event_queue untuk dikirim ke LIS.
+    Dibaca oleh LisBridgeService.StatusReporter.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        q = session.query(TblLisEventQueue).filter(
+            TblLisEventQueue.instrument_id == instrument_id,
+            TblLisEventQueue.send_status == "pending",
+        )
+        if event_type:
+            q = q.filter(TblLisEventQueue.event_type == event_type)
+        return q.order_by(TblLisEventQueue.id.asc()).limit(limit).all()
+    finally:
+        session.close()
+
+
+def update_lis_event_status(
+    event_id: int,
+    status: str,
+    error_message: str | None = None,
+    increment_retry: bool = False,
+) -> bool:
+    """
+    Update send_status di tbl_lis_event_queue.
+    Owned by LisBridgeService.StatusReporter.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        ev = session.query(TblLisEventQueue).filter(
+            TblLisEventQueue.id == event_id
+        ).first()
+        if not ev:
+            return False
+        ev.send_status = status
+        if error_message is not None:
+            ev.error_message = error_message
+        if increment_retry:
+            ev.retry_count = (ev.retry_count or 0) + 1
+        if status == "sent":
+            ev.sent_at = datetime.now(timezone.utc)
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        return False
     finally:
         session.close()
