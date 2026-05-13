@@ -33,8 +33,9 @@ Direktori: `/opt/midlab/` | Log: `/var/log/midlab/` | Config: `/etc/midlab/confi
 |---|---|---|
 | TCPSocketService | Koneksi TCP per alat, panggil ProtocolModule, update tbl_order flag | tcp_<id>.log |
 | ProtocolModule | Parse raw bytes → ResultObject JSON, simpan ke tbl_result status=pending | (dipanggil oleh TCP) |
-| ResultSenderService | Poll tbl_result pending → POST ke LIS REST API, update send_status | result_sender.log |
-| OrderReceiverService | Terima order dari LIS via REST API → simpan tbl_order status=pending | order_receiver.log |
+| ResultSenderService | Poll tbl_result pending → POST ke LIS REST API, update send_status (legacy, skip rows yang `lis_bridge_enabled=true`) | result_sender.log |
+| OrderReceiverService | Terima order dari LIS via REST API → simpan tbl_order status=pending (legacy) | order_receiver.log |
+| LisBridgeService | Per-alat: pull /orders/pending → tbl_order, push tbl_result → /results, drain tbl_lis_event_queue → /status, push WARN/ERROR log → /logs (EazyApp) | lis_bridge_<id>.log |
 | WebConsoleService | Dashboard UI, watchdog start/stop/restart service, CRUD alat, log viewer | webconsole.log |
 
 **Hardware:** RS232 alat → RS232-to-LAN converter → switch → server (TCP)
@@ -47,7 +48,9 @@ Direktori: `/opt/midlab/` | Log: `/var/log/midlab/` | Config: `/etc/midlab/confi
 ```sql
 tbl_instrument: id, name, ip_address, port, protocol(ASTM|HL7|BCI),
                 mode(unidirectional|bidirectional), bidir_mode(NULL|broadcast|query|broadcast+query),
-                broadcast_interval INT DEFAULT 30, connection(server|client), is_active
+                broadcast_interval INT DEFAULT 30, connection(server|client), is_active,
+                lis_instrument_id, lis_api_key, order_poll_interval,
+                last_lis_sync_at, lis_status_pushed, lis_bridge_enabled
 
 tbl_result:     id, instrument_id, protocol, raw_data TEXT, result_json JSON,
                 send_status(pending|sent|failed), retry_count, sent_at, error_message, received_at
@@ -57,12 +60,18 @@ tbl_order:      id, instrument_id, order_json JSON,
                 retry_count, sent_to_instrument_at, error_message, created_at
 
 tbl_service_log: id, service, level(INFO|WARNING|ERROR), message, logged_at
+
+tbl_lis_event_queue: id, instrument_id, event_type(status|log), payload_json,
+                     send_status(pending|sent|failed|skipped), retry_count,
+                     error_message, created_at, sent_at
 ```
 
 **Flag ownership:**
-- `tbl_result.send_status` → OWNED by ResultSenderService
+- `tbl_result.send_status` → OWNED by ResultSenderService / LisBridgeService.ResultPusher
 - `tbl_order.instrument_status` → OWNED by TCPSocketService/ProtocolModule
 - `failed_at_service` → nilai contoh: `'broadcast_worker'`, `'broadcast_worker_send'`, `'query_handler_send'`
+- `tbl_lis_event_queue.send_status` → OWNED by LisBridgeService.StatusReporter/LogPusher; written by TCPSocketService
+- `tbl_instrument.lis_bridge_enabled` → toggle staged cutover legacy → LisBridgeService
 
 ---
 
@@ -164,6 +173,7 @@ broadcast+query:      ResultReceiver + BroadcastWorker + QueryHandler + shared L
 3. `protocols/astm/` → ASTMModule (unidirectional → bidirectional)
 4. `protocols/hl7/` → HL7Module (unidirectional → bidirectional)
 5. `services/tcp_socket/` → TCPSocketService (load protocol dynamic, semua mode)
-6. `services/result_sender/` → ResultSenderService
-7. `services/order_receiver/` → OrderReceiverService
-8. `services/web_console/` → Backend API + Frontend UI
+6. `services/lis_bridge/` → LisBridgeService per-alat (EazyApp): ResultPusher + OrderPuller + StatusReporter + LogPusher (replace #7+#8 legacy untuk alat yang `lis_bridge_enabled=true`)
+7. `services/result_sender/` → ResultSenderService (legacy, fallback untuk alat non-EazyApp)
+8. `services/order_receiver/` → OrderReceiverService (legacy)
+9. `services/web_console/` → Backend API + Frontend UI

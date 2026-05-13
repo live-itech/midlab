@@ -715,3 +715,28 @@ Gunakan checklist ini sebelum mengaktifkan alat baru di production.
 - [ ] Teknisi lab konfirmasi output alat sudah benar
 - [ ] Operator LIS konfirmasi result sudah muncul di LIS dengan benar
 - [ ] Supervisor/PIC menyetujui alat aktif
+
+---
+
+## Setup LIS Bridging (EazyApp)
+
+Khusus alat yang bridging-nya pakai EazyApp LIS Instrument API.
+
+1. **Buat instrument di EazyApp** → menu **Integrasi Alat → Tambah Alat**.
+   Catat `instrument_id` dan **copy API Key** unik per-alat (format `inst_xxx...`).
+2. **Set global LIS Base URL** di Web Console → **Settings → LIS Bridging**:
+   - `LIS Base URL`: `https://eazy.vespahobby.xyz` (atau URL deployment EazyApp)
+   - HTTP timeout / retry / poll intervals sesuai kebutuhan
+3. **Set per-alat API key** di Web Console → **Instruments → Edit alat**:
+   - Paste API key di field `LIS API Key (Bearer)`
+   - Klik **Verify with LIS** → harus return success dan auto-fill `LIS Instrument ID`
+   - Set `Order Poll Interval` (default 10 detik)
+   - Centang **Enable LIS Bridging** untuk activate cutover dari ResultSender lama
+4. **Simpan**, lalu start service:
+   - Via Watchdog API/Web Console: start `lis_bridge_<id>` (template systemd:
+     `midlab-lis-bridge@<id>.service`)
+5. **Verifikasi**:
+   - Cek **Dashboard → LIS Bridges**: status alat = `running`, backlog = 0
+   - Cek log `/var/log/midlab/lis_bridge_<id>.log` untuk verifikasi handshake
+   - Test push: trigger result dari alat → cek di EazyApp UI bahwa data masuk
+   - Test pull: buat order pending di EazyApp → cek `tbl_order` MidLab terisi

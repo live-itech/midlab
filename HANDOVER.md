@@ -490,3 +490,20 @@ mysql -u midlab -pmidlab_secret midlab_db -e "SELECT 1;"
 
 *Dokumen ini ditulis berdasarkan state codebase per 17 April 2026.
 Update dokumen ini jika ada perubahan arsitektur atau keputusan desain yang signifikan.*
+
+---
+
+## LIS Bridging Migration — 2026-05-13
+
+EazyApp LIS integration sekarang ditangani oleh `LisBridgeService` per-alat
+(replace `OrderReceiverService` + `ResultSenderService` untuk alat yang
+`lis_bridge_enabled=true`).
+
+- Spec: `docs/superpowers/specs/2026-05-13-lis-bridging-eazyapp-design.md`
+- Plan: `docs/superpowers/plans/2026-05-13-lis-bridging-eazyapp.md`
+- Migration script: `scripts/migrate_lis_api.py`
+- Rollback: `scripts/migrate_lis_api_rollback.py`
+- Per-alat enabling via `tbl_instrument.lis_bridge_enabled` (set via Web Console)
+- Auth Bearer token per-alat (`tbl_instrument.lis_api_key`)
+- Global settings: `lis.base_url`, `lis.http_timeout`, `lis.retry_max`,
+  `lis.result_poll_interval`, `lis.status_poll_interval`, `lis.log_poll_interval`
