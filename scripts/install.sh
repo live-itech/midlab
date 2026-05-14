@@ -118,8 +118,28 @@ fi
 info "Memastikan paket sistem..."
 if command -v apt-get &>/dev/null; then
     apt-get update -qq
-    apt-get install -y -qq python3-venv python3-pip rsync default-mysql-client \
-        || apt-get install -y -qq python3-venv python3-pip rsync mariadb-client
+    apt-get install -y -qq python3-venv python3-pip rsync || true
+    # Coba install salah satu MySQL/MariaDB client (urutan preferensi)
+    if ! command -v mysql &>/dev/null && ! command -v mariadb &>/dev/null; then
+        apt-get install -y -qq default-mysql-client \
+            || apt-get install -y -qq mariadb-client \
+            || apt-get install -y -qq mysql-client \
+            || warn "Tidak ada mysql/mariadb client yang bisa di-install"
+    fi
+fi
+
+# Deteksi client yang tersedia (mariadb diutamakan karena unix_socket auth default Debian/Ubuntu)
+MYSQL_CLIENT=""
+for candidate in mariadb mysql; do
+    if command -v "$candidate" &>/dev/null; then
+        MYSQL_CLIENT="$candidate"
+        break
+    fi
+done
+if [[ -n "$MYSQL_CLIENT" ]]; then
+    info "MySQL client: $MYSQL_CLIENT"
+else
+    warn "MySQL/MariaDB client tidak ditemukan — DB bootstrap akan di-skip"
 fi
 
 # --------------------------------------------------
@@ -135,9 +155,9 @@ info "Menginstall Python dependencies ke venv..."
 chown -R "$MIDLAB_USER":"$MIDLAB_GROUP" "$VENV_DIR"
 
 # --------------------------------------------------
-# 5. MySQL: bikin DB + user (kalau bisa connect tanpa password)
+# 5. Database: bikin DB + user (MariaDB / MySQL)
 # --------------------------------------------------
-info "Setup database MySQL..."
+info "Setup database..."
 SQL_BOOTSTRAP=$(cat <<SQL
 CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASS';
@@ -148,14 +168,43 @@ FLUSH PRIVILEGES;
 SQL
 )
 
-if mysql -uroot <<<"$SQL_BOOTSTRAP" 2>/dev/null; then
-    info "Database '$DB_NAME' + user '$DB_USER' siap (via socket root)"
-elif command -v mariadb &>/dev/null && mariadb <<<"$SQL_BOOTSTRAP" 2>/dev/null; then
-    info "Database '$DB_NAME' + user '$DB_USER' siap (via mariadb root)"
-else
-    warn "Gagal connect MySQL sebagai root tanpa password."
-    warn "Jalankan manual:"
+# Coba urutan koneksi:
+# 1. mariadb (socket auth default Debian/Ubuntu)
+# 2. mysql -uroot (socket / no password)
+# 3. mysql -uroot -p$DB_ROOT_PASS (kalau env DB_ROOT_PASS di-set)
+db_bootstrap_done=false
+if [[ -n "$MYSQL_CLIENT" ]]; then
+    # Method 1: mariadb (socket)
+    if command -v mariadb &>/dev/null && mariadb <<<"$SQL_BOOTSTRAP" 2>/dev/null; then
+        info "Database '$DB_NAME' + user '$DB_USER' siap (via mariadb socket)"
+        db_bootstrap_done=true
+    # Method 2: mysql -uroot tanpa password
+    elif command -v mysql &>/dev/null && mysql -uroot <<<"$SQL_BOOTSTRAP" 2>/dev/null; then
+        info "Database '$DB_NAME' + user '$DB_USER' siap (via mysql -uroot)"
+        db_bootstrap_done=true
+    # Method 3: mysql -uroot -p (kalau env DB_ROOT_PASS di-set)
+    elif [[ -n "${DB_ROOT_PASS:-}" ]] && command -v mysql &>/dev/null \
+         && mysql -uroot -p"$DB_ROOT_PASS" <<<"$SQL_BOOTSTRAP" 2>/dev/null; then
+        info "Database '$DB_NAME' + user '$DB_USER' siap (via mysql -uroot -p)"
+        db_bootstrap_done=true
+    fi
+fi
+
+if [[ "$db_bootstrap_done" != true ]]; then
+    warn "Gagal auto-setup DB. Coba salah satu:"
+    warn "  1. Set DB root password lalu rerun: sudo DB_ROOT_PASS='xxx' bash $0"
+    warn "  2. Jalankan SQL manual (pakai sudo mysql atau sudo mariadb):"
     echo "$SQL_BOOTSTRAP" | sed 's/^/        /'
+fi
+
+# Verifikasi koneksi dari user yang baru dibuat
+if [[ -n "$MYSQL_CLIENT" ]] && \
+   "$MYSQL_CLIENT" -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" -P"$DB_PORT" "$DB_NAME" \
+       -e "SELECT 1;" &>/dev/null; then
+    info "Koneksi sebagai '$DB_USER' ke '$DB_NAME' verified"
+elif [[ "$db_bootstrap_done" == true ]]; then
+    warn "DB bootstrap sukses tapi koneksi '$DB_USER' via TCP $DB_HOST:$DB_PORT gagal"
+    warn "Cek bind-address di /etc/mysql/mariadb.conf.d/50-server.cnf (harus 127.0.0.1 atau 0.0.0.0)"
 fi
 
 # --------------------------------------------------
