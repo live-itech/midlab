@@ -22,6 +22,7 @@ import sys
 from protocols.base import load_module
 from lib.db import enqueue_lis_event
 from lib.utils import get_logger
+from lib.comm_logger import CommLogger
 
 from services.tcp_socket.config import InstrumentConfig
 from services.tcp_socket.receiver import ResultReceiver
@@ -58,6 +59,7 @@ class TCPSocketService:
         self._config = config
         self._logger = get_logger("tcp_socket", config.id)
         self._tag = f"[TCP_{config.id}] [{config.name}]"
+        self._comm = CommLogger.for_instrument(config.id)
 
         # Load protocol module secara dynamic
         self._protocol = load_module(config.protocol)
@@ -306,6 +308,8 @@ class TCPSocketService:
         while self._running and self._connected:
             try:
                 data = await self._reader.read(READ_BUFFER_SIZE)
+                if data:
+                    self._comm.rx(data)
 
                 if not data:
                     # Koneksi ditutup oleh remote

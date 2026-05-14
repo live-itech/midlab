@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from lib.db import save_result
 from lib.utils import get_logger
+from lib.comm_logger import CommLogger
 
 
 # Konstanta boundary detection
@@ -52,6 +53,7 @@ class ResultReceiver:
         self._lock = socket_lock or asyncio.Lock()
         self._logger = get_logger("tcp_socket", instrument_config.id)
         self._inst_name = instrument_config.name
+        self._comm = CommLogger.for_instrument(instrument_config.id)
 
         # Buffer management
         self._buffer = bytearray()
@@ -126,6 +128,7 @@ class ResultReceiver:
                 self._logger.info(f"[{self._inst_name}] ENQ diterima, sesi dimulai")
                 # Kirim ACK
                 async with self._lock:
+                    self._comm.tx(bytes([ASTM_ACK]))
                     writer.write(bytes([ASTM_ACK]))
                     await writer.drain()
                 continue
@@ -168,6 +171,7 @@ class ResultReceiver:
                 )
                 # Kirim ACK per frame
                 async with self._lock:
+                    self._comm.tx(bytes([ASTM_ACK]))
                     writer.write(bytes([ASTM_ACK]))
                     await writer.drain()
                 continue
@@ -343,6 +347,7 @@ class ResultReceiver:
             if msh:
                 ack_bytes = builder.build_ack(msh, ACK_AA)
                 async with self._lock:
+                    self._comm.tx(ack_bytes)
                     writer.write(ack_bytes)
                     await writer.drain()
                 self._logger.info(f"[{self._inst_name}] ACK sent")
