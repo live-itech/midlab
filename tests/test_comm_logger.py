@@ -29,3 +29,33 @@ def test_unknown_byte_hex_fallback():
 
 def test_empty():
     assert _decode_for_log(b"") == ""
+
+
+from lib.comm_logger import CommLogger
+
+
+def test_logger_writes_rx_tx(tmp_path, monkeypatch):
+    monkeypatch.setattr("lib.comm_logger.LOG_DIR", str(tmp_path))
+    CommLogger._cache.clear()
+    cl = CommLogger.for_instrument(7)
+    cl.rx(b"\x05")
+    cl.tx(b"\x06")
+    cl.rx(b"\x021H|\r\x03\r\n")
+    for h in cl._logger.handlers:
+        h.flush()
+    log_file = tmp_path / "tcp_7.comm.log"
+    assert log_file.exists()
+    content = log_file.read_text()
+    assert "[tcp_7] ← RX <ENQ>" in content
+    assert "[tcp_7] → TX <ACK>" in content
+    assert "<STX>1H|<CR><ETX><CR><LF>" in content
+
+
+def test_logger_singleton_per_instrument(tmp_path, monkeypatch):
+    monkeypatch.setattr("lib.comm_logger.LOG_DIR", str(tmp_path))
+    CommLogger._cache.clear()
+    a = CommLogger.for_instrument(1)
+    b = CommLogger.for_instrument(1)
+    assert a is b
+    c = CommLogger.for_instrument(2)
+    assert c is not a
