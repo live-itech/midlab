@@ -34,7 +34,7 @@ def _column_exists(conn, table, column):
 
 def main():
     db = DBManager()
-    engine = db.get_engine()
+    engine = db.engine
     with engine.begin() as conn:
         for col in DROP_COLS:
             if not _column_exists(conn, "tbl_instrument", col):

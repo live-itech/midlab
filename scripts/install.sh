@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ============================================================
 # MidLab Install Script
-# Setup user, direktori, permissions, systemd units, dan deps
+# Setup user, direktori, permissions, venv, systemd units, DB
 # Jalankan sebagai root: sudo bash scripts/install.sh
+# Idempotent: aman dijalankan berkali-kali.
 # ============================================================
 
 set -euo pipefail
@@ -11,8 +12,19 @@ MIDLAB_DIR="/opt/midlab"
 LOG_DIR="/var/log/midlab"
 CONFIG_DIR="/etc/midlab"
 SYSTEMD_DIR="/etc/systemd/system"
+VENV_DIR="$MIDLAB_DIR/.venv"
 MIDLAB_USER="midlab"
 MIDLAB_GROUP="midlab"
+
+# Default DB settings (override via env var)
+DB_HOST="${DB_HOST:-127.0.0.1}"
+DB_PORT="${DB_PORT:-3306}"
+DB_NAME="${DB_NAME:-midlab_db}"
+DB_USER="${DB_USER:-midlab}"
+DB_PASS="${DB_PASS:-midlab}"
+
+# Lokasi source (default = direktori parent dari script)
+SRC_DIR="${SRC_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 
 # Warna output
 RED='\033[0;31m'
@@ -24,108 +36,199 @@ info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
 
-# Cek root
 if [[ $EUID -ne 0 ]]; then
     error "Script ini harus dijalankan sebagai root (sudo)"
 fi
 
 info "=== MidLab Installation ==="
+info "Source dir : $SRC_DIR"
+info "Install dir: $MIDLAB_DIR"
+info "DB         : $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME"
 
 # --------------------------------------------------
-# 1. Buat user midlab
+# 1. User midlab
 # --------------------------------------------------
 if id "$MIDLAB_USER" &>/dev/null; then
     info "User '$MIDLAB_USER' sudah ada"
 else
     info "Membuat user '$MIDLAB_USER'..."
     useradd --system --no-create-home --shell /usr/sbin/nologin "$MIDLAB_USER"
-    info "User '$MIDLAB_USER' dibuat"
 fi
 
 # --------------------------------------------------
-# 2. Buat direktori yang dibutuhkan
+# 2. Direktori + permissions
 # --------------------------------------------------
-info "Membuat direktori..."
+info "Menyiapkan direktori..."
+mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$MIDLAB_DIR"
 
-mkdir -p "$LOG_DIR"
-mkdir -p "$CONFIG_DIR"
+# Copy source ke $MIDLAB_DIR (kalau berbeda dari source)
+if [[ "$SRC_DIR" != "$MIDLAB_DIR" ]]; then
+    info "Sync source $SRC_DIR -> $MIDLAB_DIR..."
+    rsync -a --delete \
+        --exclude '.git' --exclude '.venv' --exclude '__pycache__' \
+        --exclude 'tests' --exclude 'docs' \
+        "$SRC_DIR/" "$MIDLAB_DIR/"
+fi
 
-# --------------------------------------------------
-# 3. Set ownership dan permissions
-# --------------------------------------------------
-info "Setting permissions..."
+chown -R "$MIDLAB_USER":"$MIDLAB_GROUP" "$LOG_DIR" "$MIDLAB_DIR"
+chmod 755 "$LOG_DIR" "$MIDLAB_DIR"
 
-chown -R "$MIDLAB_USER":"$MIDLAB_GROUP" "$LOG_DIR"
-chmod 755 "$LOG_DIR"
-
-chown -R "$MIDLAB_USER":"$MIDLAB_GROUP" "$MIDLAB_DIR"
-chmod 755 "$MIDLAB_DIR"
-
-# Config bisa dibaca user midlab, tulis hanya root
 chown root:"$MIDLAB_GROUP" "$CONFIG_DIR"
 chmod 750 "$CONFIG_DIR"
-if [[ -f "$CONFIG_DIR/config.yaml" ]]; then
+
+# Bikin config.yaml default kalau belum ada
+if [[ ! -f "$CONFIG_DIR/config.yaml" ]]; then
+    info "Membuat $CONFIG_DIR/config.yaml default..."
+    cat > "$CONFIG_DIR/config.yaml" <<EOF
+database:
+  host: $DB_HOST
+  port: $DB_PORT
+  user: $DB_USER
+  password: $DB_PASS
+  database: $DB_NAME
+  pool_size: 10
+  pool_recycle: 3600
+
+logging:
+  level: INFO
+  max_bytes: 10485760
+  backup_count: 5
+
+server:
+  host: 0.0.0.0
+  debug: false
+
+order_receiver:
+  port: 8001
+  api_key: ""
+
+lis:
+  api_url: ""
+  api_key: ""
+EOF
     chown root:"$MIDLAB_GROUP" "$CONFIG_DIR/config.yaml"
     chmod 640 "$CONFIG_DIR/config.yaml"
-fi
-
-# --------------------------------------------------
-# 4. Install Python dependencies
-# --------------------------------------------------
-info "Menginstall Python dependencies..."
-
-if [[ -f "$MIDLAB_DIR/requirements.txt" ]]; then
-    pip3 install --quiet -r "$MIDLAB_DIR/requirements.txt"
-    info "Dependencies terinstall"
 else
-    warn "requirements.txt tidak ditemukan di $MIDLAB_DIR"
+    info "$CONFIG_DIR/config.yaml sudah ada, tidak diubah"
 fi
 
 # --------------------------------------------------
-# 5. Copy systemd unit files
+# 3. System packages
+# --------------------------------------------------
+info "Memastikan paket sistem..."
+if command -v apt-get &>/dev/null; then
+    apt-get update -qq
+    apt-get install -y -qq python3-venv python3-pip rsync default-mysql-client \
+        || apt-get install -y -qq python3-venv python3-pip rsync mariadb-client
+fi
+
+# --------------------------------------------------
+# 4. Python venv + deps
+# --------------------------------------------------
+if [[ ! -d "$VENV_DIR" ]]; then
+    info "Membuat virtualenv $VENV_DIR..."
+    python3 -m venv "$VENV_DIR"
+fi
+info "Menginstall Python dependencies ke venv..."
+"$VENV_DIR/bin/pip" install --quiet --upgrade pip
+"$VENV_DIR/bin/pip" install --quiet -r "$MIDLAB_DIR/requirements.txt"
+chown -R "$MIDLAB_USER":"$MIDLAB_GROUP" "$VENV_DIR"
+
+# --------------------------------------------------
+# 5. MySQL: bikin DB + user (kalau bisa connect tanpa password)
+# --------------------------------------------------
+info "Setup database MySQL..."
+SQL_BOOTSTRAP=$(cat <<SQL
+CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASS';
+CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'%';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost';
+FLUSH PRIVILEGES;
+SQL
+)
+
+if mysql -uroot <<<"$SQL_BOOTSTRAP" 2>/dev/null; then
+    info "Database '$DB_NAME' + user '$DB_USER' siap (via socket root)"
+elif command -v mariadb &>/dev/null && mariadb <<<"$SQL_BOOTSTRAP" 2>/dev/null; then
+    info "Database '$DB_NAME' + user '$DB_USER' siap (via mariadb root)"
+else
+    warn "Gagal connect MySQL sebagai root tanpa password."
+    warn "Jalankan manual:"
+    echo "$SQL_BOOTSTRAP" | sed 's/^/        /'
+fi
+
+# --------------------------------------------------
+# 6. Bootstrap ORM schema + migrasi LIS
+# --------------------------------------------------
+info "Bootstrap ORM schema (Base.metadata.create_all)..."
+cd "$MIDLAB_DIR"
+if "$VENV_DIR/bin/python" -c "from lib.db import Base, DBManager; Base.metadata.create_all(DBManager().engine); print('ORM ready')" 2>&1; then
+    info "Schema ORM dibuat"
+else
+    warn "Bootstrap ORM gagal — cek koneksi DB di $CONFIG_DIR/config.yaml"
+fi
+
+info "Menjalankan migrasi LIS bridging..."
+if "$VENV_DIR/bin/python" "$MIDLAB_DIR/scripts/migrate_lis_api.py"; then
+    info "Migrasi LIS selesai"
+else
+    warn "Migrasi LIS gagal — periksa output di atas"
+fi
+
+# --------------------------------------------------
+# 7. Systemd units
 # --------------------------------------------------
 info "Menginstall systemd unit files..."
-
 UNIT_SRC="$MIDLAB_DIR/systemd"
 if [[ -d "$UNIT_SRC" ]]; then
-    cp "$UNIT_SRC/midlab-web-console.service" "$SYSTEMD_DIR/"
-    cp "$UNIT_SRC/midlab-result-sender.service" "$SYSTEMD_DIR/"
-    cp "$UNIT_SRC/midlab-order-receiver.service" "$SYSTEMD_DIR/"
-    cp "$UNIT_SRC/midlab-tcp@.service" "$SYSTEMD_DIR/"
-    info "Unit files di-copy ke $SYSTEMD_DIR"
+    for unit in midlab-web-console.service midlab-result-sender.service \
+                midlab-order-receiver.service midlab-tcp@.service \
+                midlab-lis-bridge@.service; do
+        if [[ -f "$UNIT_SRC/$unit" ]]; then
+            cp "$UNIT_SRC/$unit" "$SYSTEMD_DIR/"
+            info "  + $unit"
+        else
+            warn "  - $unit tidak ditemukan, skip"
+        fi
+    done
 else
     error "Direktori $UNIT_SRC tidak ditemukan"
 fi
 
-# --------------------------------------------------
-# 6. Reload systemd
-# --------------------------------------------------
+# Patch ExecStart agar pakai venv python (kalau belum)
+for unit in "$SYSTEMD_DIR"/midlab-*.service; do
+    [[ -f "$unit" ]] || continue
+    if grep -q "ExecStart=/usr/bin/python3" "$unit"; then
+        sed -i "s|ExecStart=/usr/bin/python3|ExecStart=$VENV_DIR/bin/python|" "$unit"
+        info "  patched ExecStart → venv di $(basename "$unit")"
+    fi
+done
+
 info "Reload systemd daemon..."
 systemctl daemon-reload
 
 # --------------------------------------------------
-# 7. Tampilkan info
+# 8. Summary
 # --------------------------------------------------
 echo ""
 info "=== Instalasi selesai ==="
 echo ""
 echo "Langkah selanjutnya:"
-echo "  1. Pastikan config.yaml ada di $CONFIG_DIR/config.yaml"
-echo "  2. Pastikan MySQL sudah running dan database sudah dibuat"
+echo "  1. Review config di $CONFIG_DIR/config.yaml"
+echo "  2. Start Web Console:"
+echo "       sudo systemctl start midlab-web-console"
+echo "       sudo systemctl enable midlab-web-console"
+echo "  3. Akses UI: http://localhost:8000"
+echo "  4. Untuk tiap alat:"
+echo "       sudo systemctl start midlab-tcp@<id>"
+echo "       sudo systemctl start midlab-lis-bridge@<id>   # kalau pakai EazyApp"
 echo ""
-echo "Menjalankan service:"
-echo "  sudo systemctl start midlab-web-console"
-echo "  sudo systemctl start midlab-result-sender"
-echo "  sudo systemctl start midlab-order-receiver"
-echo "  sudo systemctl start midlab-tcp@1          # instrument ID 1"
-echo ""
-echo "Enable auto-start saat boot:"
-echo "  sudo systemctl enable midlab-web-console"
-echo "  sudo systemctl enable midlab-result-sender"
-echo "  sudo systemctl enable midlab-order-receiver"
-echo "  sudo systemctl enable midlab-tcp@1"
-echo ""
-echo "Cek status:"
+echo "Cek status / log:"
 echo "  sudo systemctl status midlab-web-console"
 echo "  sudo journalctl -u midlab-web-console -f"
+echo "  sudo tail -f $LOG_DIR/lis_bridge_<id>.log"
+echo ""
+echo "Override DB credentials saat install (rerun):"
+echo "  sudo DB_NAME=foo DB_USER=bar DB_PASS=baz bash $0"
 echo ""

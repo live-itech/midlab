@@ -11,7 +11,7 @@ from lib.db import DBManager
 
 def main():
     db = DBManager()
-    engine = db.get_engine()
+    engine = db.engine
     with engine.begin() as conn:
         not_enabled = conn.execute(
             text(

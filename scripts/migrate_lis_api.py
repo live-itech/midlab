@@ -53,7 +53,7 @@ def _column_exists(conn, table: str, column: str) -> bool:
 
 def main():
     db = DBManager()
-    engine = db.get_engine()
+    engine = db.engine
     with engine.begin() as conn:
         for col_name, alter_sql in ADD_COLS_TBL_INSTRUMENT:
             if _column_exists(conn, "tbl_instrument", col_name):
