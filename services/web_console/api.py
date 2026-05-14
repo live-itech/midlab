@@ -91,7 +91,7 @@ async def page_instruments(request: Request):
 
 @app.get("/protocols", response_class=HTMLResponse)
 async def page_protocols(request: Request):
-    return _templates.TemplateResponse(request, "instruments.html", {"active_page": "protocols"})
+    return _templates.TemplateResponse(request, "protocols.html", {"active_page": "protocols"})
 
 @app.get("/services", response_class=HTMLResponse)
 async def page_services(request: Request):
@@ -192,6 +192,8 @@ class ServiceStatusResponse(BaseModel):
     uptime: Optional[int] = None
     auto_restart: bool = False
     instrument_id: Optional[int] = None
+    instrument_name: Optional[str] = None
+    display_name: Optional[str] = None
 
 
 class AutoRestartRequest(BaseModel):
@@ -293,7 +295,55 @@ class DashboardResponse(BaseModel):
 async def list_services(x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
     statuses = watchdog.get_all_status()
-    return [ServiceStatusResponse(**s) for s in statuses.values()]
+
+    # Lookup nama instrument untuk service tcp_<id> agar UI bisa tampilkan
+    # label friendly "tcp_3 — roche cobas c111"
+    name_map: dict[int, str] = {}
+    db = DBManager()
+    session = db.get_session()
+    try:
+        for inst in session.query(TblInstrument).all():
+            name_map[inst.id] = inst.name
+    finally:
+        session.close()
+
+    out = []
+    for s in statuses.values():
+        iid = s.get("instrument_id")
+        inst_name = name_map.get(iid) if iid else None
+        display = (
+            f"{s['name']} — {inst_name}" if inst_name else s["name"]
+        )
+        out.append(
+            ServiceStatusResponse(
+                **s,
+                instrument_name=inst_name,
+                display_name=display,
+            )
+        )
+
+    # Tambah virtual entry per alat aktif untuk akses raw comm log.
+    # Service id "tcp_<id>__comm" diresolusi ke file tcp_<id>.comm.log
+    # oleh log resolver; bukan proses nyata, watchdog tidak mengelolanya.
+    session = db.get_session()
+    try:
+        for inst in session.query(TblInstrument).filter(TblInstrument.is_active == True).all():  # noqa: E712
+            out.append(
+                ServiceStatusResponse(
+                    name=f"tcp_{inst.id}__comm",
+                    running=True,
+                    pid=None,
+                    uptime=None,
+                    auto_restart=False,
+                    instrument_id=inst.id,
+                    instrument_name=inst.name,
+                    display_name=f"{inst.name} — Communication",
+                )
+            )
+    finally:
+        session.close()
+
+    return out
 
 
 @app.post("/api/services/{name}/start", response_model=MessageResponse)
@@ -316,7 +366,12 @@ async def start_service(name: str, x_api_key: str = Header(None)):
 @app.post("/api/services/{name}/stop", response_model=MessageResponse)
 async def stop_service(name: str, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
-    result = watchdog.stop_service(name)
+    # stop_service blocking (process.wait up to 10s) — jalankan di executor
+    # agar event loop FastAPI tidak ke-block (otherwise auto-refresh & request
+    # lain pile-up di belakangnya).
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, watchdog.stop_service, name
+    )
     if not result["success"]:
         raise HTTPException(409, result["message"])
     return MessageResponse(success=True, message=result["message"])
@@ -647,6 +702,74 @@ async def list_protocols(x_api_key: str = Header(None)):
     ]
 
 
+class ProtocolSwapRequest(BaseModel):
+    protocol: str
+
+
+@app.post(
+    "/api/instruments/{instrument_id}/protocol",
+    response_model=MessageResponse,
+)
+async def hot_swap_protocol(
+    instrument_id: int,
+    body: ProtocolSwapRequest,
+    x_api_key: str = Header(None),
+):
+    """Hot-swap protocol alat: update tbl_instrument.protocol + restart tcp_<id>."""
+    _verify_api_key(x_api_key)
+
+    new_proto = body.protocol.upper()
+    if new_proto not in _PROTOCOL_REGISTRY:
+        raise HTTPException(400, f"Protocol tidak valid: {body.protocol}")
+
+    db = DBManager()
+    session = db.get_session()
+    try:
+        row = (
+            session.query(TblInstrument)
+            .filter(TblInstrument.id == instrument_id)
+            .first()
+        )
+        if row is None:
+            raise HTTPException(404, f"Instrument ID {instrument_id} tidak ditemukan")
+
+        old_proto = row.protocol
+        if old_proto == new_proto:
+            return MessageResponse(
+                success=True,
+                message=f"Protocol sudah {new_proto}, tidak ada perubahan",
+            )
+
+        row.protocol = new_proto
+        session.commit()
+        logger.info(
+            f"Protocol hot-swap: instrument_id={instrument_id} "
+            f"{old_proto} → {new_proto}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(500, f"Gagal update protocol: {e}")
+    finally:
+        session.close()
+
+    # Restart tcp service agar protokol baru di-load
+    svc_name = f"tcp_{instrument_id}"
+    watchdog.register_service(svc_name, instrument_id=instrument_id)
+    restart_msg = "service belum running, tidak di-restart"
+    if watchdog._is_process_alive(svc_name):
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, watchdog.restart_service, svc_name
+        )
+        restart_msg = result.get("message", "restart selesai")
+
+    return MessageResponse(
+        success=True,
+        message=f"Protocol → {new_proto}; {restart_msg}",
+    )
+
+
 # ============================================================
 # [Settings] — LIS bridging configuration
 # ============================================================
@@ -874,11 +997,10 @@ async def test_lis_connection(
 LOG_DIR = "/var/log/midlab"
 
 
-def _resolve_log_file(service: str) -> str:
-    """Tentukan nama file log berdasarkan service name."""
-    if service.startswith("tcp_"):
-        return os.path.join(LOG_DIR, f"{service}.log")
-    return os.path.join(LOG_DIR, f"{service}.log")
+from lib.log_resolver import resolve_log_path as _resolve_log_path
+
+# Backwards-compat alias
+_resolve_log_file = _resolve_log_path
 
 
 @app.get("/api/logs/{service}")
