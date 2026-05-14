@@ -1,7 +1,7 @@
 # Design: User Roles & Raw Communication Logs
 
 **Date:** 2026-05-14
-**Status:** Draft — pending implementation
+**Status:** Phase B (raw comm logs) implemented 2026-05-14; Phase A (user roles & auth) pending. See `docs/superpowers/plans/2026-05-14-user-roles-and-comm-logs.md`.
 **Scope:** Web Console authentication/authorization + raw TCP frame logging viewer
 
 ---
