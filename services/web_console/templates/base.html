@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}MidLab{% endblock %} - Web Console</title>
+  <link rel="icon" type="image/svg+xml" href="/static/img/midlab_icon.svg">
   <link rel="stylesheet" href="/static/css/style.css">
   {% block head %}{% endblock %}
 </head>
@@ -12,7 +13,9 @@
     <!-- ===== Sidebar ===== -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand">
-        <div class="sidebar-brand-icon">M</div>
+        <div class="sidebar-brand-icon">
+          <img src="/static/img/midlab_icon.svg" alt="MidLab" width="32" height="32">
+        </div>
         <span class="sidebar-brand-text">MidLab</span>
       </div>
       <nav class="sidebar-nav">
