@@ -97,7 +97,7 @@ def build_mid_payload(result_row, instrument) -> dict:
     if isinstance(spec, dict) and spec.get("collected_at"):
         spec["collected_at"] = _to_iso8601(spec["collected_at"])
 
-    # results: drop non-klinis + normalize status code.
+    # results: drop non-klinis + normalize status code + reference_range.
     results = payload.get("results")
     if isinstance(results, list):
         clean = []
@@ -108,6 +108,10 @@ def build_mid_payload(result_row, instrument) -> dict:
                 continue
             code = (r.get("status") or "").upper()
             r["status"] = _STATUS_MAP.get(code, r.get("status") or "")
+            # ASTM pakai '\' sbg separator range (low\high); EazyApp '-'.
+            rng = r.get("reference_range")
+            if isinstance(rng, str) and "\\" in rng:
+                r["reference_range"] = rng.replace("\\", "-")
             clean.append(r)
         payload["results"] = clean
 

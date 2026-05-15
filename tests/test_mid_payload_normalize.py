@@ -100,6 +100,24 @@ def test_non_clinical_results_filtered():
     assert codes == ["GLU"]
 
 
+def test_reference_range_astm_separator_normalized():
+    row = _row(result_json={"results": [
+        {"test_code": "SGPT", "value": "49.2", "reference_range": "20.0\\30.0",
+         "status": "F"},
+    ]})
+    p = build_mid_payload(row, _inst())
+    assert p["results"][0]["reference_range"] == "20.0-30.0"
+
+
+def test_reference_range_without_separator_untouched():
+    row = _row(result_json={"results": [
+        {"test_code": "CHOL", "value": "215", "reference_range": "<200",
+         "status": "F"},
+    ]})
+    p = build_mid_payload(row, _inst())
+    assert p["results"][0]["reference_range"] == "<200"
+
+
 def test_comments_dropped():
     row = _row(result_json={"comments": ["result[687]: Sol1 F Dev"],
                             "results": []})
