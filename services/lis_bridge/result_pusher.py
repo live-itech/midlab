@@ -8,21 +8,112 @@ Loop: poll tbl_result → POST /results → update send_status.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 from lib.lis_client import LisApiClient, LisApiError
 from lib.utils import get_logger
 
 
+# Offset zona waktu lab. Alat emit jam lokal tanpa offset; EazyApp (Laravel)
+# kontraknya pakai ISO8601 ber-offset (lihat Postman collection: +07:00).
+# Ubah di sini kalau lab pindah zona waktu.
+_LAB_TZ = timezone(timedelta(hours=7))
+
+# ASTM datetime: YYYYMMDD atau YYYYMMDDHHMMSS (12/14 digit juga ditoleransi).
+_ASTM_DT_RE = re.compile(r"^\d{8}(\d{4}|\d{6})?$")
+
+# Kode status hasil ASTM (Cobas/umumnya) → label yang dipakai kontrak EazyApp.
+_STATUS_MAP = {
+    "F": "final",
+    "P": "preliminary",
+    "C": "correction",
+    "X": "cancelled",
+    "I": "pending",
+    "R": "final",
+}
+
+# Nama protocol internal MidLab → wire protocol yang dikenal EazyApp.
+_PROTOCOL_MAP = {
+    "COBAS_C111": "ASTM",
+}
+
+# Pseudo-result yang dihasilkan parser tapi bukan hasil klinis pasien
+# (kalibrasi, absorbansi mentah). Tidak boleh dikirim ke EazyApp.
+_NON_CLINICAL_STATUS = {"calibration", "absorbance_raw"}
+
+
+def _to_iso8601(value) -> str:
+    """
+    ASTM datetime (YYYYMMDD[HHMM[SS]]) → ISO8601 ber-offset lab.
+    Passthrough kalau sudah ISO / format lain / kosong (jangan dirusak).
+    """
+    if not value or not isinstance(value, str):
+        return value or ""
+    v = value.strip()
+    if not v or not _ASTM_DT_RE.match(v):
+        return v
+    fmt = {8: "%Y%m%d", 12: "%Y%m%d%H%M", 14: "%Y%m%d%H%M%S"}.get(len(v))
+    if fmt is None:
+        return v
+    try:
+        dt = datetime.strptime(v, fmt).replace(tzinfo=_LAB_TZ)
+        return dt.isoformat()
+    except ValueError:
+        return v
+
+
 def build_mid_payload(result_row, instrument) -> dict:
-    """Build MID v1.0 payload, rewrite instrument_id ke string LIS."""
+    """
+    Build MID v1.0 payload sesuai kontrak EazyApp Instrument API.
+
+    Normalisasi di boundary egress (tbl_result.result_json tetap menyimpan
+    data parsed mentah untuk audit):
+    - instrument_id → string LIS
+    - message_datetime / specimen.collected_at → ISO8601
+    - protocol internal → wire protocol EazyApp
+    - results[].status kode ASTM → label
+    - buang pseudo-result kalibrasi/absorbansi
+    - drop `comments` (tidak ada di kontrak EazyApp)
+    """
     payload = dict(result_row.result_json or {})
     payload["instrument_id"] = instrument.lis_instrument_id
     payload["mid_version"] = "1.0"
     payload.setdefault("message_id", f"MSG-{instrument.id}-{result_row.id}")
-    if not payload.get("message_datetime"):
+
+    # message_datetime: ASTM→ISO; fallback ke received_at kalau kosong.
+    iso_mdt = _to_iso8601(payload.get("message_datetime"))
+    if not iso_mdt:
         ts = result_row.received_at or datetime.now(timezone.utc)
-        payload["message_datetime"] = ts.isoformat()
+        iso_mdt = ts.isoformat()
+    payload["message_datetime"] = iso_mdt
+
+    # protocol: map nama internal → wire protocol EazyApp.
+    proto = (payload.get("protocol") or "").upper()
+    payload["protocol"] = _PROTOCOL_MAP.get(proto, proto or "ASTM")
+
+    # specimen.collected_at → ISO8601.
+    spec = payload.get("specimen")
+    if isinstance(spec, dict) and spec.get("collected_at"):
+        spec["collected_at"] = _to_iso8601(spec["collected_at"])
+
+    # results: drop non-klinis + normalize status code.
+    results = payload.get("results")
+    if isinstance(results, list):
+        clean = []
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            if r.get("status") in _NON_CLINICAL_STATUS:
+                continue
+            code = (r.get("status") or "").upper()
+            r["status"] = _STATUS_MAP.get(code, r.get("status") or "")
+            clean.append(r)
+        payload["results"] = clean
+
+    # comments tidak ada di kontrak EazyApp.
+    payload.pop("comments", None)
+
     return payload
 
 
