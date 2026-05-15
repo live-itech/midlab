@@ -309,6 +309,11 @@ async def list_services(x_api_key: str = Header(None)):
 
     out = []
     for s in statuses.values():
+        # Safety net: virtual service tidak boleh muncul lewat watchdog
+        # status — itu domain virtual entry loop di bawah. Skip biar tidak
+        # dobel meski state file korup.
+        if "__comm" in s["name"]:
+            continue
         iid = s.get("instrument_id")
         inst_name = name_map.get(iid) if iid else None
         display = (
@@ -346,9 +351,19 @@ async def list_services(x_api_key: str = Header(None)):
     return out
 
 
+def _reject_virtual(name: str) -> None:
+    """Tolak nama service virtual (log-only) di endpoint kontrol service."""
+    if "__comm" in name:
+        raise HTTPException(
+            400,
+            f"{name} adalah virtual service (log-only), tidak bisa dikontrol",
+        )
+
+
 @app.post("/api/services/{name}/start", response_model=MessageResponse)
 async def start_service(name: str, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
+    _reject_virtual(name)
     # Untuk tcp service, parse instrument_id dari nama
     instrument_id = None
     if name.startswith("tcp_"):
@@ -366,6 +381,7 @@ async def start_service(name: str, x_api_key: str = Header(None)):
 @app.post("/api/services/{name}/stop", response_model=MessageResponse)
 async def stop_service(name: str, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
+    _reject_virtual(name)
     # stop_service blocking (process.wait up to 10s) — jalankan di executor
     # agar event loop FastAPI tidak ke-block (otherwise auto-refresh & request
     # lain pile-up di belakangnya).
@@ -380,6 +396,7 @@ async def stop_service(name: str, x_api_key: str = Header(None)):
 @app.post("/api/services/{name}/restart", response_model=MessageResponse)
 async def restart_service(name: str, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
+    _reject_virtual(name)
     result = await asyncio.get_event_loop().run_in_executor(
         None, watchdog.restart_service, name
     )
@@ -395,6 +412,7 @@ async def toggle_auto_restart(
     x_api_key: str = Header(None),
 ):
     _verify_api_key(x_api_key)
+    _reject_virtual(name)
     result = watchdog.set_auto_restart(name, body.enabled)
     return MessageResponse(success=True, message=result["message"])
 
