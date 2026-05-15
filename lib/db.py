@@ -595,6 +595,58 @@ def enqueue_lis_event(instrument_id: int, event_type: str, payload: dict) -> int
         session.close()
 
 
+def get_latest_status_per_instrument() -> dict[int, dict]:
+    """
+    Untuk tiap instrument, ambil event_type='status' terbaru dari
+    tbl_lis_event_queue.
+
+    Returns:
+        Dict {instrument_id: {"status": str, "error_message": str|None,
+                              "at": datetime}}.
+        Empty dict kalau DB error atau tidak ada event sama sekali.
+
+    Dipakai oleh Web Console untuk menentukan apakah row service tcp_<id>
+    harus diwarnai merah (status offline/error) di menu Services.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        # Subquery: id terbesar per instrument_id untuk event_type='status'.
+        # Lalu join kembali ke tabel utama untuk ambil payload.
+        from sqlalchemy import func
+
+        subq = (
+            session.query(
+                TblLisEventQueue.instrument_id,
+                func.max(TblLisEventQueue.id).label("max_id"),
+            )
+            .filter(TblLisEventQueue.event_type == "status")
+            .group_by(TblLisEventQueue.instrument_id)
+            .subquery()
+        )
+        rows = (
+            session.query(TblLisEventQueue)
+            .join(
+                subq,
+                (TblLisEventQueue.id == subq.c.max_id),
+            )
+            .all()
+        )
+        result: dict[int, dict] = {}
+        for r in rows:
+            payload = r.payload_json or {}
+            result[r.instrument_id] = {
+                "status": payload.get("status"),
+                "error_message": payload.get("error_message"),
+                "at": r.created_at,
+            }
+        return result
+    except Exception:
+        return {}
+    finally:
+        session.close()
+
+
 def get_pending_lis_events(
     instrument_id: int,
     event_type: str | None = None,

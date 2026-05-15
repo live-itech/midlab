@@ -3,6 +3,12 @@
 {% block topbar_title %}Services{% endblock %}
 
 {% block content %}
+<style>
+  /* Row merah saat service tcp_<id> tidak bisa connect ke alat */
+  tr.row-danger td { background: rgba(220, 38, 38, 0.08); }
+  tr.row-danger:hover td { background: rgba(220, 38, 38, 0.14); }
+</style>
+
 <div class="page-header">
   <h1>Services</h1>
   <p>Kelola dan monitor semua service MidLab</p>
@@ -55,11 +61,34 @@
       // Virtual service (log-only, mis. tcp_<id>__comm) — tidak bisa dikontrol.
       const isVirtual = s.name.includes('__comm');
 
-      const statusBadge = isVirtual
-        ? '<span class="badge badge-blue"><span class="badge-dot"></span>Virtual</span>'
-        : (s.running
-          ? '<span class="badge badge-green"><span class="badge-dot"></span>Running</span>'
-          : '<span class="badge badge-red"><span class="badge-dot"></span>Stopped</span>');
+      // Row merah kalau service tcp_<id> running tapi alat offline/error.
+      const isDisconnected = !isVirtual && s.running
+        && (s.connection_state === 'offline' || s.connection_state === 'error');
+      const rowClass = isDisconnected ? 'row-danger' : '';
+
+      // Tentukan badge status:
+      // - virtual                 → biru "Virtual"
+      // - process stopped         → merah "Stopped"
+      // - connection_state online → hijau "Connected"
+      // - connection_state offline→ merah "Disconnected" (tooltip error)
+      // - connection_state error  → merah "Error" (tooltip error)
+      // - unknown/no event        → hijau "Running" (fallback lama)
+      let statusBadge;
+      if (isVirtual) {
+        statusBadge = '<span class="badge badge-blue"><span class="badge-dot"></span>Virtual</span>';
+      } else if (!s.running) {
+        statusBadge = '<span class="badge badge-red"><span class="badge-dot"></span>Stopped</span>';
+      } else if (s.connection_state === 'offline') {
+        const tip = s.connection_error ? ` title="${App.escapeHtml(s.connection_error)}"` : '';
+        statusBadge = `<span class="badge badge-red"${tip}><span class="badge-dot"></span>Disconnected</span>`;
+      } else if (s.connection_state === 'error') {
+        const tip = s.connection_error ? ` title="${App.escapeHtml(s.connection_error)}"` : '';
+        statusBadge = `<span class="badge badge-red"${tip}><span class="badge-dot"></span>Error</span>`;
+      } else if (s.connection_state === 'online') {
+        statusBadge = '<span class="badge badge-green"><span class="badge-dot"></span>Connected</span>';
+      } else {
+        statusBadge = '<span class="badge badge-green"><span class="badge-dot"></span>Running</span>';
+      }
 
       const autoChecked = s.auto_restart ? 'checked' : '';
       const autoCell = isVirtual
@@ -77,7 +106,7 @@
             ${s.running ? `<button class="btn btn-warning btn-xs" onclick="svcAction('restart','${App.escapeHtml(s.name)}')">Restart</button>` : ''}
           </div>`;
 
-      return `<tr>
+      return `<tr class="${rowClass}">
         <td class="font-bold">${App.escapeHtml(s.display_name || s.name)}</td>
         <td>${statusBadge}</td>
         <td class="font-mono">${s.pid || '-'}</td>

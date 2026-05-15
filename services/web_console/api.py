@@ -39,6 +39,7 @@ from lib.db import (
     TblOrder,
     TblServiceLog,
     get_all_settings,
+    get_latest_status_per_instrument,
     get_setting,
     set_setting,
     update_result_status,
@@ -194,6 +195,10 @@ class ServiceStatusResponse(BaseModel):
     instrument_id: Optional[int] = None
     instrument_name: Optional[str] = None
     display_name: Optional[str] = None
+    # Untuk row tcp_<id>: state koneksi ke alat (derived dari tbl_lis_event_queue).
+    # Salah satu: online | offline | error | unknown | None (untuk non-tcp / virtual).
+    connection_state: Optional[str] = None
+    connection_error: Optional[str] = None
 
 
 class AutoRestartRequest(BaseModel):
@@ -307,6 +312,10 @@ async def list_services(x_api_key: str = Header(None)):
     finally:
         session.close()
 
+    # State koneksi terbaru per instrument dari tbl_lis_event_queue.
+    # Dipakai untuk pewarnaan row merah di UI saat alat offline / error.
+    conn_state_map = get_latest_status_per_instrument()
+
     out = []
     for s in statuses.values():
         # Safety net: virtual service tidak boleh muncul lewat watchdog
@@ -319,11 +328,26 @@ async def list_services(x_api_key: str = Header(None)):
         display = (
             f"{s['name']} — {inst_name}" if inst_name else s["name"]
         )
+
+        # Connection state hanya relevan untuk service tcp_<id> yang punya
+        # instrument_id. Service core (result_sender, order_receiver) → None.
+        conn_state = None
+        conn_error = None
+        if s["name"].startswith("tcp_") and iid is not None:
+            ev = conn_state_map.get(iid)
+            if ev:
+                conn_state = ev.get("status")
+                conn_error = ev.get("error_message")
+            else:
+                conn_state = "unknown"
+
         out.append(
             ServiceStatusResponse(
                 **s,
                 instrument_name=inst_name,
                 display_name=display,
+                connection_state=conn_state,
+                connection_error=conn_error,
             )
         )
 

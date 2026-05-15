@@ -192,6 +192,9 @@ class TCPSocketService:
                     f"{self._tag} Gagal bind {self._config.ip_address}:"
                     f"{self._config.port}: {e}"
                 )
+                # Catat error agar UI Services bisa render row merah saat bind
+                # listener gagal (mis. port already in use, IP salah).
+                self._emit_lis_status("error", str(e))
                 if not self._running:
                     break
                 await asyncio.sleep(RECONNECT_DELAY)
