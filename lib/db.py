@@ -44,7 +44,7 @@ class TblInstrument(Base):
     name = Column(String(255), nullable=False)
     ip_address = Column(String(45), nullable=False)
     port = Column(Integer, nullable=False)
-    protocol = Column(Enum("ASTM", "HL7", "BCI", name="protocol_enum"), nullable=False)
+    protocol = Column(String(50), nullable=False)
     mode = Column(
         Enum("unidirectional", "bidirectional", name="mode_enum"),
         nullable=False,

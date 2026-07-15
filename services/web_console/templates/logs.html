@@ -51,7 +51,7 @@
       services.forEach(s => {
         const opt = document.createElement('option');
         opt.value = s.name;
-        opt.textContent = s.name;
+        opt.textContent = s.display_name || s.name;
         sel.appendChild(opt);
       });
     } catch (err) {
