@@ -580,9 +580,18 @@ Hasil dikirim alat sebagai `ORU^R01` — **satu pesan per tes**, jadi sampel den
 dilakukan di sisi LIS via barcode (`specimen.sample_id`). QC (`MSH-16=2`) ikut
 masuk dengan `status=qc`.
 
-Hanya download per barcode yang didukung. Group download (QRY dengan QRD-8
-kosong, "semua sampel hari ini") akan dibalas `QAK|SR|NF` — di alat pilih mode
-download per barcode.
+Dua cara download order didukung:
+- **Per barcode** — alat kirim QRY berisi barcode, dibalas satu `DSR^Q03`.
+- **Group download** — alat kirim QRY tanpa barcode ("semua sampel hari ini"),
+  MidLab mengirim **semua order pending** alat itu, satu `DSR^Q03` per order,
+  maksimal 100 order per batch (sisanya menyusul di group query berikutnya).
+  Alat boleh membatalkan di tengah (QRD-9 = `CAN`); order yang belum sempat
+  di-ACK tetap `pending` dan otomatis terkirim lagi di group query berikutnya.
+
+Rentang waktu di QRF (mode "semua sampel" vs "sampel terbaru") tidak dipakai
+sebagai filter — MidLab memakai flag `pending` sebagai penanda "belum dikirim
+ke alat", dan order otomatis jadi `sent` setelah terkirim, sehingga group query
+berikutnya hanya membawa order baru.
 
 **Konfigurasi di alat:**
 1. Setup → Communication (atau LIS/Host) → aktifkan Host Communication

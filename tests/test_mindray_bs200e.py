@@ -13,6 +13,7 @@ import pytest
 from protocols.base import load_module, is_mllp_protocol, _PROTOCOL_REGISTRY
 from protocols.mindray_bs200e.module import MindrayBS200EModule
 from services.tcp_socket.receiver import ResultReceiver
+from services.tcp_socket.query_handler import QueryHandler
 
 
 PROTOCOL = "HL7_MINDRAY_BS200E"
@@ -40,6 +41,18 @@ QRY = (
     b"QRD|20070723170707|R|D|1|||RD|34567743|OTH|||T|\r"
     b"QRF|BS-200E|20070723000000|20070723170749|||RCT|COR|ALL||\r"
     b"\x1c\x0d"
+)
+
+# Group download: QRD-8 (barcode) kosong = minta semua sampel hari itu
+QRY_GROUP = QRY.replace(b"|RD|34567743|OTH|", b"|RD||OTH|")
+
+# Cancel: QRD-9 = CAN
+QRY_CANCEL = QRY.replace(b"|RD|34567743|OTH|", b"|RD||CAN|")
+
+ACK_Q03 = (
+    b"\x0bMSH|^~\\&|Mindray|BS-200E|||20070723170707||ACK^Q03|5|P|2.3.1||||||ASCII|||\r"
+    b"MSA|AA|5|Message accepted|||0|\r"
+    b"ERR|0|\r\x1c\x0d"
 )
 
 ORDER = {
@@ -160,6 +173,169 @@ def test_query_not_found_tanpa_dsr(module):
 def test_not_found_tidak_menunggu_ack(module):
     # QueryHandler membaca flag ini; alat tidak membalas QCK NF sama sekali.
     assert module.ACK_EXPECTED_ON_NOT_FOUND is False
+
+
+# ============================================================
+# Group download — pembangunan payload
+# ============================================================
+
+def test_handle_enq_kenali_group_dan_cancel(module):
+    assert module.handle_enq(QRY_GROUP, INSTRUMENT)["type"] == "group_query"
+    assert module.handle_enq(QRY_CANCEL, INSTRUMENT)["type"] == "cancel"
+
+
+def test_group_response_satu_payload_per_order(module):
+    orders = [
+        {"specimen": {"sample_id": "1587120"}, "tests": [{"test_code": "1"}]},
+        {"specimen": {"sample_id": "1587121"}, "tests": [{"test_code": "2"}]},
+        {"specimen": {"sample_id": "1587125"}, "tests": [{"test_code": "8"}]},
+    ]
+    context = module.handle_enq(QRY_GROUP, INSTRUMENT)["_msh"]
+    payloads = module.format_group_query_response(orders, INSTRUMENT, context)
+
+    assert len(payloads) == 3
+    # QCK hanya sekali, di depan DSR pertama → tiap payload = tepat satu ACK
+    assert payloads[0].index(b"QCK^Q02") < payloads[0].index(b"DSR^Q03")
+    assert b"QCK^Q02" not in payloads[1]
+    assert b"QCK^Q02" not in payloads[2]
+    # Payload sejajar dengan urutan order
+    assert b"DSP|21||1587120|||" in payloads[0]
+    assert b"DSP|21||1587121|||" in payloads[1]
+    assert b"DSP|21||1587125|||" in payloads[2]
+    # DSC berurut; kosong hanya di pesan terakhir (penanda akhir transfer)
+    assert b"DSC|1|" in payloads[0]
+    assert b"DSC|2|" in payloads[1]
+    assert payloads[2].endswith(b"DSC||\r\x1c\x0d")
+
+
+# ============================================================
+# Group download — integrasi QueryHandler
+# ============================================================
+
+class _FakeOrder:
+    def __init__(self, order_id, sample_id):
+        self.id = order_id
+        self.order_json = {
+            "order_id": f"ORD-{order_id}",
+            "specimen": {"sample_id": sample_id},
+            "tests": [{"test_code": "1", "test_name": "GLU"}],
+        }
+
+
+class _FakeReader:
+    """Reader yang mengembalikan balasan alat satu per satu."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+
+    async def read(self, _n):
+        return self.replies.pop(0) if self.replies else b""
+
+
+def _make_handler(module, orders, replies, monkeypatch):
+    """QueryHandler dengan DB lookup dan update status yang di-stub."""
+    updates = []
+
+    async def _fake_lookup(self, limit):
+        return orders
+
+    monkeypatch.setattr(QueryHandler, "_lookup_pending_orders", _fake_lookup)
+    monkeypatch.setattr(
+        "services.tcp_socket.query_handler.update_order_status",
+        lambda order_id, status, failed_at=None, error=None:
+            updates.append((order_id, status)),
+    )
+
+    handler = QueryHandler(
+        _FakeConfig(), module, _FakeReader(replies), _FakeWriter(), asyncio.Lock()
+    )
+    return handler, updates
+
+
+async def test_group_download_kirim_semua_order(module, monkeypatch):
+    """3 order pending → 3 DSR terkirim, semua ditandai sent."""
+    orders = [_FakeOrder(1, "1587120"), _FakeOrder(2, "1587121"), _FakeOrder(3, "1587125")]
+    handler, updates = _make_handler(module, orders, [ACK_Q03] * 3, monkeypatch)
+
+    assert await handler.handle_query(QRY_GROUP) is True
+
+    assert updates == [(1, "sent"), (2, "sent"), (3, "sent")]
+    assert handler.stats["total_found"] == 3
+
+    written = handler._writer.written
+    assert written.count(b"DSR^Q03") == 3
+    assert written.count(b"QCK^Q02") == 1, "QCK hanya sekali untuk seluruh batch"
+    assert written.count(b"DSC||") == 1, "hanya pesan terakhir yang DSC void"
+
+
+async def test_group_download_tanpa_order_balas_nf(module, monkeypatch):
+    """Tidak ada order pending → QCK NF, tanpa DSR, tanpa menunggu ACK."""
+    handler, updates = _make_handler(module, [], [], monkeypatch)
+
+    assert await handler.handle_query(QRY_GROUP) is True
+
+    assert updates == []
+    assert handler.stats["total_not_found"] == 1
+    assert b"QAK|SR|NF|" in handler._writer.written
+    assert b"DSR^Q03" not in handler._writer.written
+
+
+async def test_group_download_berhenti_saat_dibatalkan_alat(module, monkeypatch):
+    """
+    Alat kirim QRY cancel di posisi ACK → pengiriman berhenti dan order yang
+    kena cancel tetap `pending` (bukan `failed`), supaya ikut group query
+    berikutnya tanpa perlu retry manual.
+    """
+    orders = [_FakeOrder(1, "A"), _FakeOrder(2, "B"), _FakeOrder(3, "C")]
+    handler, updates = _make_handler(
+        module, orders, [ACK_Q03, QRY_CANCEL], monkeypatch
+    )
+
+    assert await handler.handle_query(QRY_GROUP) is True
+
+    # Hanya order 1 yang berubah status; order 2 & 3 tidak disentuh.
+    assert updates == [(1, "sent")]
+    assert handler._writer.written.count(b"DSR^Q03") == 2
+
+
+async def test_group_download_berhenti_saat_ack_timeout(module, monkeypatch):
+    """
+    Alat berhenti membalas → beda dari cancel: order yang tidak di-ACK ditandai
+    `failed` supaya kelihatan di Order Monitor, dan batch dihentikan.
+    """
+    orders = [_FakeOrder(1, "A"), _FakeOrder(2, "B"), _FakeOrder(3, "C")]
+    handler, updates = _make_handler(module, orders, [ACK_Q03], monkeypatch)
+
+    assert await handler.handle_query(QRY_GROUP) is True
+
+    assert updates == [(1, "sent"), (2, "failed")]
+    assert handler.stats["total_found"] == 1
+
+
+async def test_cancel_saat_idle_diabaikan(module, monkeypatch):
+    """Cancel tanpa group download berjalan: tidak ada response, tidak crash."""
+    handler, updates = _make_handler(module, [], [], monkeypatch)
+
+    assert await handler.handle_query(QRY_CANCEL) is True
+
+    assert updates == []
+    assert handler._writer.written == b""
+
+
+async def test_protocol_tanpa_group_support_balas_nf(monkeypatch):
+    """
+    Protocol yang belum mendukung group download tetap dibalas not-found,
+    bukan error.
+    """
+    module = MindrayBS200EModule()
+    monkeypatch.delattr(MindrayBS200EModule, "format_group_query_response")
+    handler, updates = _make_handler(module, [_FakeOrder(1, "A")], [], monkeypatch)
+
+    assert await handler.handle_query(QRY_GROUP) is True
+
+    assert updates == []
+    assert b"QAK|SR|NF|" in handler._writer.written
+    assert handler.stats["total_not_found"] == 1
 
 
 @pytest.mark.parametrize("msa,expected", [

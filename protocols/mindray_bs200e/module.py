@@ -8,9 +8,13 @@ Mode yang didukung:
 
 - unidirectional  — terima ORU^R01 (hasil sampel / QC / kalibrasi) → ResultObject,
                     balas ACK^R01
-- bidirectional query    — alat kirim QRY^Q02 per barcode, MidLab balas
-                    QCK^Q02 + DSR^Q03 berisi order, alat balas ACK^Q03.
-                    Ini mode bidirectional native alat (alat yang menarik order).
+- bidirectional query    — alat kirim QRY^Q02, MidLab balas QCK^Q02 + DSR^Q03
+                    berisi order, alat balas ACK^Q03. Ini mode bidirectional
+                    native alat (alat yang menarik order). Dua bentuk:
+                      * per barcode  — QRD-8 berisi barcode → satu DSR
+                      * group download — QRD-8 kosong → seluruh order pending
+                        dikirim satu DSR per order, alat boleh membatalkan
+                        di tengah jalan (QRD-9 = CAN)
 - bidirectional broadcast — MidLab mendorong DSR^Q03 tanpa didahului query.
                     Manual tidak mendefinisikan alur ini (alat selalu menjadi
                     inisiator download), jadi anggap best-effort: pakai `query`
@@ -338,14 +342,10 @@ class MindrayBS200EModule(BaseProtocolModule):
                 info["type"] = "cancel"
                 self._logger.info("Alat membatalkan group download")
             elif qrd.get("is_group_query"):
+                # QRD-8 kosong = alat minta semua sampel hari itu sekaligus;
+                # QueryHandler meneruskannya ke format_group_query_response().
                 info["type"] = "group_query"
-                # Group download minta semua sampel hari itu; QueryHandler hanya
-                # mencari satu order per sample_id, jadi query tanpa barcode
-                # akan dibalas NF.
-                self._logger.warning(
-                    "Group download (QRD-8 kosong) belum didukung — akan dibalas NF. "
-                    "Pakai download per barcode di alat."
-                )
+                self._logger.info("Group download diminta (QRD-8 kosong)")
 
             self._logger.info(f"Query parsed: barcode={info['sample_id'] or '(kosong)'}")
 
@@ -382,6 +382,49 @@ class MindrayBS200EModule(BaseProtocolModule):
         qck = self._builder.build_qck_q02(context, found=True)
         dsr = self._builder.build_dsr_q03(order, context)
         return qck + dsr
+
+    def format_group_query_response(self, orders: list, instrument: dict,
+                                    query_msh: dict) -> list:
+        """
+        Bangun response group download: satu payload per order, sejajar
+        berdasarkan index dengan list `orders` yang diberikan QueryHandler.
+
+        Manual bab 3 no. 4: LIS membalas QCK^Q02 dulu, lalu mengirim tiap sampel
+        sebagai satu pesan DSR^Q03, dan alat membalas ACK^Q03 per DSR. QCK
+        sendiri tidak di-ACK, jadi QCK digabung ke payload pertama — dengan
+        begitu tiap payload tepat menunggu satu ACK dan QueryHandler tidak perlu
+        tahu detail ini.
+
+        DSC^1 diisi nomor urut pesan dan dikosongkan pada pesan terakhir sebagai
+        penanda akhir transfer. (Tabel segment DSC di manual menyatakan
+        sebaliknya — void untuk group query — tapi contoh pesan di bab 3 dan
+        penjelasan di bab 3 no. 4 sama-sama memakai aturan ini.)
+
+        Args:
+            orders: list OrderObject dict, urut sesuai urutan pengiriman
+            query_msh: konteks query dari handle_enq()["_msh"]
+
+        Returns:
+            List bytes, satu payload per order.
+        """
+        context = query_msh or {}
+        total = len(orders)
+        self._logger.info(f"Membangun group download untuk {total} order")
+
+        payloads = []
+        for index, order in enumerate(orders):
+            is_last = index == total - 1
+            continuation = "" if is_last else str(index + 1)
+
+            payload = self._builder.build_dsr_q03(order, context, continuation)
+
+            if index == 0:
+                # QCK^Q02 hanya sekali, di depan DSR pertama.
+                payload = self._builder.build_qck_q02(context, found=True) + payload
+
+            payloads.append(payload)
+
+        return payloads
 
     def format_query_not_found(self, instrument: dict) -> bytes:
         """QCK^Q02 dengan QAK NF — tanpa konteks pesan asli."""
@@ -677,6 +720,50 @@ if __name__ == "__main__":
 
     assert b"QAK|SR|NF|" in mod.format_query_not_found(instrument)
     print("OK: format_query_not_found() — tanpa konteks tetap valid")
+
+    # --- format_group_query_response() ---
+    order2 = {
+        "order_id": "ORD-2",
+        "request_datetime": "2026-07-16T10:05:00",
+        "patient": {"patient_id": "456", "name": "Ana", "dob": "19790101", "gender": "F"},
+        "specimen": {"sample_id": "1587121", "sample_type": "plasma", "priority": "R"},
+        "tests": [{"test_code": "2", "test_name": "UA"}],
+    }
+    order3 = {
+        "order_id": "ORD-3",
+        "specimen": {"sample_id": "1587125", "sample_type": "urine"},
+        "tests": [{"test_code": "8", "test_name": ""}],
+    }
+
+    group = mod.format_group_query_response([order, order2, order3], instrument, enq["_msh"])
+    assert len(group) == 3, "satu payload per order"
+
+    # QCK hanya sekali, digabung di payload pertama supaya tiap payload
+    # menunggu tepat satu ACK.
+    assert b"QCK^Q02" in group[0]
+    assert group[0].index(b"QCK^Q02") < group[0].index(b"DSR^Q03")
+    assert b"QCK^Q02" not in group[1] and b"QCK^Q02" not in group[2]
+
+    # Tiap payload berisi barcode order-nya sendiri, urut sesuai input
+    assert b"DSP|21||34567743|||" in group[0]
+    assert b"DSP|21||1587121|||" in group[1]
+    assert b"DSP|21||1587125|||" in group[2]
+
+    # DSC: nomor urut, kosong di pesan terakhir sebagai penanda akhir transfer
+    assert b"DSC|1|" in group[0]
+    assert b"DSC|2|" in group[1]
+    assert group[2].endswith(b"DSC||\r\x1c\x0d"), group[2][-20:]
+    print("OK: format_group_query_response() — QCK sekali + DSC berurut, void di akhir")
+
+    # Satu order: langsung jadi pesan terakhir (DSC void)
+    solo = mod.format_group_query_response([order], instrument, enq["_msh"])
+    assert len(solo) == 1
+    assert b"QCK^Q02" in solo[0]
+    assert solo[0].endswith(b"DSC||\r\x1c\x0d")
+    print("OK: format_group_query_response() — satu order langsung DSC void")
+
+    assert mod.format_group_query_response([], instrument, enq["_msh"]) == []
+    print("OK: format_group_query_response() — nol order menghasilkan list kosong")
 
     # --- format_order() (broadcast) ---
     bc = mod.format_order(order, instrument)

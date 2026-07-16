@@ -12,12 +12,19 @@ Skenario yang dijalankan:
   3. QUERY   — kirim QRY^Q02 berisi barcode:
                  - order ada    → QCK^Q02 (QAK OK) + DSR^Q03, dibalas ACK^Q03
                  - order kosong → QCK^Q02 (QAK NF), tanpa DSR
+  4. GROUP   — kirim QRY^Q02 tanpa barcode (download semua sampel hari ini):
+                 QCK^Q02 + satu DSR^Q03 per order, tiap DSR dibalas ACK^Q03,
+                 berhenti saat DSC kosong (penanda pesan terakhir)
+  5. CANCEL  — group download lalu kirim QRY^Q02 CAN setelah DSR pertama;
+               order sisa harus tetap pending di MidLab
 
 Run:
-  python3 scripts/mindray_bs200e_test_sender.py                      # semua skenario
+  python3 scripts/mindray_bs200e_test_sender.py                      # result+qc+query
   python3 scripts/mindray_bs200e_test_sender.py --host 127.0.0.1 --port 2575
   python3 scripts/mindray_bs200e_test_sender.py --scenario result
   python3 scripts/mindray_bs200e_test_sender.py --scenario query --barcode 34567743
+  python3 scripts/mindray_bs200e_test_sender.py --scenario group
+  python3 scripts/mindray_bs200e_test_sender.py --scenario cancel
 """
 import argparse
 import socket
@@ -75,10 +82,19 @@ def build_oru_qc(control_id: str) -> bytes:
 
 
 def build_qry(barcode: str, control_id: str) -> bytes:
-    """QRY^Q02 — minta order untuk satu barcode."""
+    """QRY^Q02 — minta order untuk satu barcode. Barcode kosong = group download."""
     return wrap([
         msh("QRY^Q02", control_id),
         f"QRD|{now()}|R|D|1|||RD|{barcode}|OTH|||T|",
+        f"QRF|BS-200E|{now()[:8]}000000|{now()}|||RCT|COR|ALL||",
+    ])
+
+
+def build_qry_cancel(control_id: str) -> bytes:
+    """QRY^Q02 dengan QRD-9 = CAN — batalkan group download yang berjalan."""
+    return wrap([
+        msh("QRY^Q02", control_id),
+        f"QRD|{now()}|R|D|1|||RD||CAN|||T|",
         f"QRF|BS-200E|{now()[:8]}000000|{now()}|||RCT|COR|ALL||",
     ])
 
@@ -167,6 +183,73 @@ def scenario_query(sock: socket.socket, barcode: str) -> bool:
     return True
 
 
+def _barcodes_in(raw: bytes) -> list:
+    """Ambil barcode (DSP baris 21) dari tiap DSR dalam payload."""
+    return [
+        line.split("|")[3]
+        for line in unwrap(raw).split("\r")
+        if line.startswith("DSP|21|") and line.split("|")[3]
+    ]
+
+
+def _dsc_void(raw: bytes) -> bool:
+    """True bila ada DSC kosong — penanda pesan terakhir group transfer."""
+    return any(
+        line.startswith("DSC|") and not line.split("|")[1]
+        for line in unwrap(raw).split("\r")
+    )
+
+
+def scenario_group(sock: socket.socket, cancel_after: int = 0) -> bool:
+    """
+    Group download: QRY tanpa barcode → QCK + serangkaian DSR sampai DSC kosong.
+
+    cancel_after > 0: kirim QRY cancel setelah sekian DSR diterima.
+    """
+    msg = build_qry("", "4")
+    show("TX QRY^Q02 (group download — QRD-8 kosong)", msg)
+    sock.sendall(msg)
+
+    diterima = []
+    while True:
+        reply = receive(sock, f"RX DSR^Q03 #{len(diterima) + 1}")
+        if not reply:
+            return False
+
+        if b"QAK|SR|NF|" in reply and b"DSR^Q03" not in reply:
+            print("\n[OK] MidLab balas QAK NF — tidak ada order pending.")
+            print("     (buat order dulu via POST /api/orders untuk menguji group download)")
+            return True
+
+        if b"DSR^Q03" not in reply:
+            print("\n[GAGAL] response bukan DSR^Q03")
+            return False
+
+        diterima.extend(_barcodes_in(reply))
+        terakhir = _dsc_void(reply)
+
+        if cancel_after and len(diterima) >= cancel_after and not terakhir:
+            cancel = build_qry_cancel("9")
+            show(f"TX QRY^Q02 CAN (batalkan setelah {len(diterima)} order)", cancel)
+            sock.sendall(cancel)
+            print(f"\n[OK] Cancel dikirim setelah {len(diterima)} order diterima:")
+            for b in diterima:
+                print(f"     barcode {b}")
+            return True
+
+        ack = build_ack_q03("4")
+        print(f"\n--- TX ACK^Q03 untuk DSR #{len(diterima)} ---")
+        sock.sendall(ack)
+
+        if terakhir:
+            break
+
+    print(f"\n[OK] Group download selesai: {len(diterima)} order diterima")
+    for b in diterima:
+        print(f"     barcode {b}")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Simulator alat Mindray BS-200E")
     ap.add_argument("--host", default=DEFAULT_HOST)
@@ -174,8 +257,10 @@ def main() -> int:
     ap.add_argument("--barcode", default=DEFAULT_BARCODE)
     ap.add_argument(
         "--scenario",
-        choices=["all", "result", "qc", "query"],
+        choices=["all", "result", "qc", "query", "group", "cancel"],
         default="all",
+        help="'all' = result+qc+query (group/cancel dijalankan terpisah "
+             "karena mengubah status order pending)",
     )
     args = ap.parse_args()
 
@@ -196,6 +281,10 @@ def main() -> int:
             hasil.append(("qc", scenario_qc(sock)))
         if args.scenario in ("all", "query"):
             hasil.append(("query", scenario_query(sock, args.barcode)))
+        if args.scenario == "group":
+            hasil.append(("group", scenario_group(sock)))
+        if args.scenario == "cancel":
+            hasil.append(("cancel", scenario_group(sock, cancel_after=1)))
     finally:
         sock.close()
 
