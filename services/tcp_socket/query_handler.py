@@ -14,6 +14,7 @@ from enum import Enum
 from lib.db import DBManager, TblOrder, update_order_status
 from lib.utils import get_logger
 from lib.comm_logger import CommLogger
+from protocols.base import is_mllp_protocol
 
 
 # Konstanta ASTM
@@ -262,7 +263,7 @@ class QueryHandler:
         protocol = self._config.protocol.upper()
 
         try:
-            if protocol == "HL7" and query_msh and hasattr(self._protocol, "format_query_response_full"):
+            if is_mllp_protocol(protocol) and query_msh and hasattr(self._protocol, "format_query_response_full"):
                 formatted = self._protocol.format_query_response_full(
                     order_json, instrument_dict, query_msh
                 )
@@ -286,34 +287,39 @@ class QueryHandler:
         protocol = self._config.protocol.upper()
 
         try:
-            if protocol == "HL7" and query_msh and hasattr(self._protocol, "format_query_not_found_full"):
+            if is_mllp_protocol(protocol) and query_msh and hasattr(self._protocol, "format_query_not_found_full"):
                 formatted = self._protocol.format_query_not_found_full(
                     instrument_dict, query_msh
                 )
             else:
                 formatted = self._protocol.format_query_not_found(instrument_dict)
 
+            # Sebagian alat tidak membalas response not-found sama sekali
+            # (Mindray: QCK dengan QAK NF tidak di-ACK). Menunggu ACK di situ
+            # bukan cuma stall — read()-nya ikut menelan pesan alat berikutnya.
+            expect_ack = getattr(self._protocol, "ACK_EXPECTED_ON_NOT_FOUND", True)
+
             async with self._lock:
-                await self._send_data(formatted)
+                await self._send_data(formatted, expect_ack=expect_ack)
 
         except Exception as e:
             self._logger.warning(
                 f"[{self._inst_name}] Error sending not-found: {e}"
             )
 
-    async def _send_data(self, formatted) -> bool:
+    async def _send_data(self, formatted, expect_ack: bool = True) -> bool:
         """
         Kirim data ke alat (protocol-aware).
 
         ASTM (list of frames): ENQ → ACK → frames (ACK per frame) → EOT
-        HL7 (bytes):           send message → wait ACK
+        HL7 (bytes):           send message → wait ACK (bila expect_ack)
         """
         protocol = self._config.protocol.upper()
 
         if protocol == "ASTM" and isinstance(formatted, list):
             return await self._send_astm_frames(formatted)
         else:
-            return await self._send_hl7_message(formatted)
+            return await self._send_hl7_message(formatted, expect_ack=expect_ack)
 
     async def _send_astm_frames(self, frames: list) -> bool:
         """Kirim frames ASTM dengan handshake."""
@@ -361,12 +367,15 @@ class QueryHandler:
             )
             return False
 
-    async def _send_hl7_message(self, message: bytes) -> bool:
-        """Kirim HL7 message dan tunggu ACK."""
+    async def _send_hl7_message(self, message: bytes, expect_ack: bool = True) -> bool:
+        """Kirim HL7 message; tunggu ACK kecuali alat memang tidak membalas."""
         try:
             self._comm.tx(message)
             self._writer.write(message)
             await self._writer.drain()
+
+            if not expect_ack:
+                return True
 
             self._set_state(QueryState.WAIT_ACK)
             ack = await self._wait_for_ack(timeout=15)

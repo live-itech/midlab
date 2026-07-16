@@ -77,7 +77,9 @@ class TblResult(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     instrument_id = Column(Integer, nullable=False)
-    protocol = Column(String(10), nullable=False)
+    # Selebar tbl_instrument.protocol — nama driver spesifik alat bisa panjang
+    # (mis. HL7_MINDRAY_BS200E). Lihat scripts/migrate_result_protocol_width.sql.
+    protocol = Column(String(50), nullable=False)
     raw_data = Column(Text, nullable=True)
     result_json = Column(JSON, nullable=True)
     send_status = Column(

@@ -158,7 +158,19 @@ _PROTOCOL_REGISTRY = {
     "HL7":  "protocols.hl7.module",
     "BCI":  "protocols.bci.module",
     "COBAS_C111": "protocols.cobas_c111.module",
+    "HL7_MINDRAY_BS200E": "protocols.mindray_bs200e.module",
 }
+
+
+def is_mllp_protocol(protocol_name: str) -> bool:
+    """
+    True bila protocol memakai framing MLLP (`<VT>...<FS><CR>`).
+
+    Dipakai TCPSocketService untuk memilih strategi framing dan handshake:
+    keluarga HL7 (termasuk driver spesifik alat seperti HL7_MINDRAY_BS200E)
+    memakai MLLP, keluarga ASTM memakai handshake ENQ/ACK/EOT.
+    """
+    return (protocol_name or "").upper().startswith("HL7")
 
 # Cache instance yang sudah di-load
 _loaded_modules: dict[str, BaseProtocolModule] = {}
@@ -305,6 +317,16 @@ if __name__ == "__main__":
     # Test 5: Registry tersedia
     print(f"OK: Protocol registry: {list(_PROTOCOL_REGISTRY.keys())}")
     print()
+
+    # Test 5b: is_mllp_protocol — keluarga HL7 vs ASTM
+    assert is_mllp_protocol("HL7") is True
+    assert is_mllp_protocol("HL7_MINDRAY_BS200E") is True
+    assert is_mllp_protocol("hl7_mindray_bs200e") is True
+    assert is_mllp_protocol("ASTM") is False
+    assert is_mllp_protocol("COBAS_C111") is False
+    assert is_mllp_protocol("") is False
+    assert is_mllp_protocol(None) is False
+    print("OK: is_mllp_protocol() membedakan keluarga HL7 dan ASTM\n")
 
     # Test 6: clear_module_cache
     _loaded_modules["TEST"] = dummy
