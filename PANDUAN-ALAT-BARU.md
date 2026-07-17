@@ -603,6 +603,63 @@ berikutnya hanya membawa order baru.
 
 ---
 
+### ARUMA AR580 (hematology 5-part)
+
+| Parameter | Nilai |
+|---|---|
+| Protocol | HL7_ARUMA_AR580 |
+| Mode | **unidirectional** |
+| Bidir Mode | — (kosongkan) |
+| Connection | server (MidLab listen, alat connect) |
+| Port | bebas, misal 2576 |
+| Transport | MLLP (HL7 v2.3.1) |
+
+**Catatan penting:** dokumen acuan (*"LIS communication protocol instruction"*,
+Genrui) sebenarnya tertulis untuk **Genrui KT-6610** — MSH-3 `KT-6610`, MSH-4
+`Genrui`, OBR-24 `HM`. AR580 diperlakukan sebagai rebrand OEM-nya. Karena itu
+parser **tidak memvalidasi MSH-3**: sending application apa pun diterima dan
+hanya dicatat ke log, supaya integrasi tidak gagal bila firmware ternyata
+mengirim string lain.
+
+**Wajib `mode=unidirectional`.** Alat kirim `ORU^R01`, MidLab balas `ACK^R01`
+berisi `MSA|AA|<MSH-10>`. Bab 2.2 dokumen menyebut `ORM^O01`/`ORR^O02` untuk
+download order, tetapi **tidak menspesifikasikannya sama sekali** (tidak ada
+definisi field, contoh, maupun grammar segment), dan bab 2.3.2 (QC upload) masih
+kosong. Query/broadcast karena itu tidak diimplementasi — menyetel `bidir_mode`
+akan menyebabkan `NotImplementedError` yang disengaja, bukan diam-diam mengirim
+pesan tebakan ke alat.
+
+Alat **mengirim ulang hasil dalam 3 detik** bila ACK tidak diterima (bab 2.3.1).
+Perilaku ini bisa dimatikan di alat lewat setelan *no wait response*.
+
+Satu `ORU^R01` memuat seluruh panel CBC+DIFF (25 parameter: WBC, Neu#/Lym#/Mon#/
+Eos#/Bas#, Neu%…Bas%, RBC, HGB, HCT, MCV, MCH, MCHC, RDW-CV/SD, PLT, MPV, PDW,
+PCT, P-LCC, P-LCR) — berbeda dari Mindray BS yang satu pesan per tes.
+
+Hal yang ditangani khusus driver ini:
+- **Histogram/scattergram** (OBX bertipe `ED`: `DIFFScatter_BMP`,
+  `WBCScatter_BMP`, `RBCHistogram_BMP`, `PLTHistogram_BMP`) **dilewati** —
+  bitmap bisa puluhan KB dan akan memotong `raw_data TEXT` (batas 64KB) serta
+  membengkakkan payload ke EazyApp. Yang dicatat hanya jumlahnya di log.
+- **Metadata** (Blood Mode, Test Mode, Ref Group, Age, Remarks, Blood Type)
+  tidak masuk `results[]`: Blood Mode → `specimen.sample_type`, Test Mode →
+  `order.panel`, sisanya → `comments`. ESR tetap diperlakukan sebagai hasil.
+- **OBX-13** (status edit: `O`=reagen kedaluwarsa, `E`=edit aktif, `e`=edit
+  pasif) digabung ke `status`, mis. `F/E` — supaya lab tahu nilai pernah diedit.
+
+**Konfigurasi di alat:**
+1. Setup → Communication (atau LIS/Host) → aktifkan Host Communication
+2. Protocol: HL7, Transfer Mode: **Unidirectional**
+3. Host IP: IP server MidLab, Port: sesuai `tbl_instrument.port`
+4. Character encoding: **UTF-8**
+
+**Uji tanpa alat:**
+```bash
+python3 scripts/aruma_ar580_test_sender.py --host <ip-midlab> --port 2576
+```
+
+---
+
 ### Mindray BC Series (BC-6800, BC-6800Plus)
 
 | Parameter | Nilai |
