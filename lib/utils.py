@@ -11,6 +11,7 @@ Menyediakan fungsi-fungsi umum yang dipakai di seluruh service:
 import json
 import logging
 import os
+import sys
 import uuid
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -21,10 +22,45 @@ from lib.config import Config
 # Direktori log
 LOG_DIR = "/var/log/midlab"
 
+# Fallback bila LOG_DIR tidak bisa dipakai (dev, atau service dijalankan oleh
+# user yang bukan pemilik /var/log/midlab). Log di sini volatile.
+LOG_DIR_FALLBACK = "/tmp/midlab"
+
 
 def generate_message_id() -> str:
     """Generate UUID string unik untuk message_id di ResultObject."""
     return str(uuid.uuid4())
+
+
+def _build_handler(
+    log_dir: str,
+    log_filename: str,
+    max_bytes: int,
+    backup_count: int,
+) -> RotatingFileHandler | None:
+    """
+    Coba buat RotatingFileHandler di log_dir.
+
+    Returns None (bukan raise) bila direktori tidak bisa dibuat ATAU file log
+    tidak bisa dibuka di dalamnya. Dua-duanya harus ditangani: direktori bisa
+    saja sudah ada tapi milik user lain — kasus nyata /var/log/midlab yang
+    dibuat installer sebagai milik user `midlab` dengan mode 755. Di situ
+    os.makedirs(exist_ok=True) sukses dan justru pembukaan file yang gagal.
+
+    Pemanggil yang menyusun pesan peringatan, karena hanya ia yang tahu ke mana
+    fallback-nya.
+    """
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        return RotatingFileHandler(
+            os.path.join(log_dir, log_filename),
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+    except OSError:
+        # PermissionError adalah subclass OSError; tangkap keduanya sekaligus.
+        return None
 
 
 def get_logger(
@@ -67,29 +103,28 @@ def get_logger(
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
 
     # Tentukan direktori log (fallback ke /tmp untuk development)
-    log_dir = LOG_DIR
-    try:
-        os.makedirs(log_dir, exist_ok=True)
-    except (PermissionError, OSError) as e:
-        import sys
-        log_dir = "/tmp/midlab"
+    handler = _build_handler(LOG_DIR, log_filename, max_bytes, backup_count)
+
+    if handler is None:
         print(
-            f"WARNING: cannot write to {LOG_DIR}: {e}; "
-            f"falling back to {log_dir}. This is acceptable for development "
-            f"but logs are volatile (cleared on reboot).",
+            f"WARNING: cannot write logs to {LOG_DIR}; "
+            f"falling back to {LOG_DIR_FALLBACK}. This is acceptable for "
+            f"development but logs are volatile (cleared on reboot).",
             file=sys.stderr,
         )
-        os.makedirs(log_dir, exist_ok=True)
+        handler = _build_handler(
+            LOG_DIR_FALLBACK, log_filename, max_bytes, backup_count
+        )
 
-    log_path = os.path.join(log_dir, log_filename)
-
-    # RotatingFileHandler sesuai konfigurasi
-    handler = RotatingFileHandler(
-        log_path,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
+    if handler is None:
+        # Kedua direktori gagal — log ke stderr saja. Service tidak boleh mati
+        # hanya karena logging tidak bisa menulis ke disk.
+        print(
+            f"WARNING: cannot write logs to {LOG_DIR_FALLBACK} either; "
+            f"logging to stderr only.",
+            file=sys.stderr,
+        )
+        handler = logging.StreamHandler(sys.stderr)
 
     # Format: [LEVEL] [SERVICE] [INSTRUMENT] pesan
     instrument_tag = str(instrument_id) if instrument_id is not None else "-"

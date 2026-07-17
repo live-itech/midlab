@@ -49,11 +49,14 @@ class Config:
         try:
             with open(self._config_path, "r") as f:
                 self._data = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            # Development-friendly default: jika config tidak ada, gunakan default values
+        except OSError as e:
+            # Development-friendly default: config tidak ada ATAU tidak bisa
+            # dibaca. Kasus kedua nyata di mesin dev — /etc/midlab/config.yaml
+            # ada tapi milik user lain, sehingga FileNotFoundError saja tidak
+            # cukup (PermissionError sama-sama subclass OSError).
             import sys
             print(
-                f"WARNING: Config file not found at {self._config_path}; "
+                f"WARNING: cannot read config at {self._config_path} ({e}); "
                 f"using built-in development defaults. "
                 f"For production, create the config file or set MIDLAB_CONFIG env var.",
                 file=sys.stderr,
