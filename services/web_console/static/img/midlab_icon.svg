@@ -1,0 +1,25 @@
+<svg viewBox="260 110 160 160" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>MidLab</title>
+  <g transform="translate(340, 190)">
+    <!-- Outer hexagon -->
+    <polygon points="0,-72 62,-36 62,36 0,72 -62,36 -62,-36" fill="#1A3A5C"/>
+    <!-- Inner hexagon -->
+    <polygon points="0,-52 45,-26 45,26 0,52 -45,26 -45,-26" fill="#0E6BA8"/>
+    <!-- Signal arcs -->
+    <path d="M -30,-6 Q -46,0 -30,12" fill="none" stroke="#7EC8E3" stroke-width="3" stroke-linecap="round"/>
+    <path d="M -38,-14 Q -60,0 -38,18" fill="none" stroke="#7EC8E3" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+    <path d="M 30,-6 Q 46,0 30,12" fill="none" stroke="#7EC8E3" stroke-width="3" stroke-linecap="round"/>
+    <path d="M 38,-14 Q 60,0 38,18" fill="none" stroke="#7EC8E3" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+    <!-- Bridge connector -->
+    <line x1="-22" y1="0" x2="22" y2="0" stroke="#E8F4FD" stroke-width="2.5"/>
+    <circle cx="-22" cy="0" r="5" fill="#4DB8E8" stroke="#E8F4FD" stroke-width="1.5"/>
+    <circle cx="0" cy="0" r="7" fill="#FF6B35" stroke="#E8F4FD" stroke-width="2"/>
+    <circle cx="22" cy="0" r="5" fill="#4DB8E8" stroke="#E8F4FD" stroke-width="1.5"/>
+    <line x1="0" y1="-4" x2="0" y2="4" stroke="#E8F4FD" stroke-width="2" stroke-linecap="round"/>
+    <!-- Top/bottom accents -->
+    <circle cx="0" cy="-28" r="3" fill="#4DB8E8" opacity="0.7"/>
+    <line x1="0" y1="-25" x2="0" y2="-8" stroke="#4DB8E8" stroke-width="1.5" stroke-dasharray="3 2" opacity="0.7"/>
+    <circle cx="0" cy="28" r="3" fill="#4DB8E8" opacity="0.7"/>
+    <line x1="0" y1="25" x2="0" y2="8" stroke="#4DB8E8" stroke-width="1.5" stroke-dasharray="3 2" opacity="0.7"/>
+  </g>
+</svg>

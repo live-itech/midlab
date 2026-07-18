@@ -39,6 +39,7 @@ from lib.db import (
     TblOrder,
     TblServiceLog,
     get_all_settings,
+    get_latest_status_per_instrument,
     get_setting,
     set_setting,
     update_result_status,
@@ -91,7 +92,7 @@ async def page_instruments(request: Request):
 
 @app.get("/protocols", response_class=HTMLResponse)
 async def page_protocols(request: Request):
-    return _templates.TemplateResponse(request, "instruments.html", {"active_page": "protocols"})
+    return _templates.TemplateResponse(request, "protocols.html", {"active_page": "protocols"})
 
 @app.get("/services", response_class=HTMLResponse)
 async def page_services(request: Request):
@@ -116,6 +117,10 @@ async def page_results(request: Request):
 @app.get("/orders", response_class=HTMLResponse)
 async def page_orders(request: Request):
     return _templates.TemplateResponse(request, "orders.html", {"active_page": "orders"})
+
+@app.get("/lis-events", response_class=HTMLResponse)
+async def page_lis_events(request: Request):
+    return _templates.TemplateResponse(request, "lis_events.html", {"active_page": "lis_events"})
 
 # Watchdog instance — dibuat saat startup
 watchdog: ServiceWatchdog | None = None
@@ -188,6 +193,12 @@ class ServiceStatusResponse(BaseModel):
     uptime: Optional[int] = None
     auto_restart: bool = False
     instrument_id: Optional[int] = None
+    instrument_name: Optional[str] = None
+    display_name: Optional[str] = None
+    # Untuk row tcp_<id>: state koneksi ke alat (derived dari tbl_lis_event_queue).
+    # Salah satu: online | offline | error | unknown | None (untuk non-tcp / virtual).
+    connection_state: Optional[str] = None
+    connection_error: Optional[str] = None
 
 
 class AutoRestartRequest(BaseModel):
@@ -204,6 +215,10 @@ class InstrumentCreate(BaseModel):
     broadcast_interval: int = Field(default=30)
     connection: str = Field(default="server", description="server atau client")
     is_active: bool = Field(default=True)
+    lis_instrument_id: Optional[str] = None
+    lis_api_key: Optional[str] = None
+    order_poll_interval: Optional[int] = 10
+    lis_bridge_enabled: bool = False
 
 
 class InstrumentUpdate(BaseModel):
@@ -216,6 +231,10 @@ class InstrumentUpdate(BaseModel):
     broadcast_interval: Optional[int] = None
     connection: Optional[str] = None
     is_active: Optional[bool] = None
+    lis_instrument_id: Optional[str] = None
+    lis_api_key: Optional[str] = None
+    order_poll_interval: Optional[int] = None
+    lis_bridge_enabled: Optional[bool] = None
 
 
 class InstrumentResponse(BaseModel):
@@ -229,6 +248,11 @@ class InstrumentResponse(BaseModel):
     broadcast_interval: int
     connection: str
     is_active: bool
+    lis_instrument_id: Optional[str] = None
+    order_poll_interval: int = 10
+    lis_bridge_enabled: bool = False
+    last_lis_sync_at: Optional[str] = None
+    lis_status_pushed: Optional[str] = None
 
 
 class ResultResponse(BaseModel):
@@ -265,6 +289,7 @@ class DashboardResponse(BaseModel):
     results_summary: dict
     orders_summary: dict
     alerts: list
+    instruments_lis: list = []  # per-instrument LIS bridge state
 
 
 # ============================================================
@@ -275,12 +300,94 @@ class DashboardResponse(BaseModel):
 async def list_services(x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
     statuses = watchdog.get_all_status()
-    return [ServiceStatusResponse(**s) for s in statuses.values()]
+
+    # Lookup nama instrument untuk service tcp_<id> agar UI bisa tampilkan
+    # label friendly "tcp_3 — roche cobas c111"
+    name_map: dict[int, str] = {}
+    db = DBManager()
+    session = db.get_session()
+    try:
+        for inst in session.query(TblInstrument).all():
+            name_map[inst.id] = inst.name
+    finally:
+        session.close()
+
+    # State koneksi terbaru per instrument dari tbl_lis_event_queue.
+    # Dipakai untuk pewarnaan row merah di UI saat alat offline / error.
+    conn_state_map = get_latest_status_per_instrument()
+
+    out = []
+    for s in statuses.values():
+        # Safety net: virtual service tidak boleh muncul lewat watchdog
+        # status — itu domain virtual entry loop di bawah. Skip biar tidak
+        # dobel meski state file korup.
+        if "__comm" in s["name"]:
+            continue
+        iid = s.get("instrument_id")
+        inst_name = name_map.get(iid) if iid else None
+        display = (
+            f"{s['name']} — {inst_name}" if inst_name else s["name"]
+        )
+
+        # Connection state hanya relevan untuk service tcp_<id> yang punya
+        # instrument_id. Service core (result_sender, order_receiver) → None.
+        conn_state = None
+        conn_error = None
+        if s["name"].startswith("tcp_") and iid is not None:
+            ev = conn_state_map.get(iid)
+            if ev:
+                conn_state = ev.get("status")
+                conn_error = ev.get("error_message")
+            else:
+                conn_state = "unknown"
+
+        out.append(
+            ServiceStatusResponse(
+                **s,
+                instrument_name=inst_name,
+                display_name=display,
+                connection_state=conn_state,
+                connection_error=conn_error,
+            )
+        )
+
+    # Tambah virtual entry per alat aktif untuk akses raw comm log.
+    # Service id "tcp_<id>__comm" diresolusi ke file tcp_<id>.comm.log
+    # oleh log resolver; bukan proses nyata, watchdog tidak mengelolanya.
+    session = db.get_session()
+    try:
+        for inst in session.query(TblInstrument).filter(TblInstrument.is_active == True).all():  # noqa: E712
+            out.append(
+                ServiceStatusResponse(
+                    name=f"tcp_{inst.id}__comm",
+                    running=True,
+                    pid=None,
+                    uptime=None,
+                    auto_restart=False,
+                    instrument_id=inst.id,
+                    instrument_name=inst.name,
+                    display_name=f"{inst.name} — Communication",
+                )
+            )
+    finally:
+        session.close()
+
+    return out
+
+
+def _reject_virtual(name: str) -> None:
+    """Tolak nama service virtual (log-only) di endpoint kontrol service."""
+    if "__comm" in name:
+        raise HTTPException(
+            400,
+            f"{name} adalah virtual service (log-only), tidak bisa dikontrol",
+        )
 
 
 @app.post("/api/services/{name}/start", response_model=MessageResponse)
 async def start_service(name: str, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
+    _reject_virtual(name)
     # Untuk tcp service, parse instrument_id dari nama
     instrument_id = None
     if name.startswith("tcp_"):
@@ -298,7 +405,13 @@ async def start_service(name: str, x_api_key: str = Header(None)):
 @app.post("/api/services/{name}/stop", response_model=MessageResponse)
 async def stop_service(name: str, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
-    result = watchdog.stop_service(name)
+    _reject_virtual(name)
+    # stop_service blocking (process.wait up to 10s) — jalankan di executor
+    # agar event loop FastAPI tidak ke-block (otherwise auto-refresh & request
+    # lain pile-up di belakangnya).
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, watchdog.stop_service, name
+    )
     if not result["success"]:
         raise HTTPException(409, result["message"])
     return MessageResponse(success=True, message=result["message"])
@@ -307,6 +420,7 @@ async def stop_service(name: str, x_api_key: str = Header(None)):
 @app.post("/api/services/{name}/restart", response_model=MessageResponse)
 async def restart_service(name: str, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
+    _reject_virtual(name)
     result = await asyncio.get_event_loop().run_in_executor(
         None, watchdog.restart_service, name
     )
@@ -322,6 +436,7 @@ async def toggle_auto_restart(
     x_api_key: str = Header(None),
 ):
     _verify_api_key(x_api_key)
+    _reject_virtual(name)
     result = watchdog.set_auto_restart(name, body.enabled)
     return MessageResponse(success=True, message=result["message"])
 
@@ -342,6 +457,11 @@ def _instrument_to_response(row: TblInstrument) -> InstrumentResponse:
         broadcast_interval=row.broadcast_interval or 30,
         connection=row.connection,
         is_active=row.is_active,
+        lis_instrument_id=row.lis_instrument_id,
+        order_poll_interval=row.order_poll_interval or 10,
+        lis_bridge_enabled=bool(row.lis_bridge_enabled),
+        last_lis_sync_at=row.last_lis_sync_at.isoformat() if row.last_lis_sync_at else None,
+        lis_status_pushed=row.lis_status_pushed,
     )
 
 
@@ -378,6 +498,10 @@ async def create_instrument(body: InstrumentCreate, x_api_key: str = Header(None
             broadcast_interval=body.broadcast_interval,
             connection=body.connection,
             is_active=body.is_active,
+            lis_instrument_id=body.lis_instrument_id,
+            lis_api_key=body.lis_api_key,
+            order_poll_interval=body.order_poll_interval or 10,
+            lis_bridge_enabled=body.lis_bridge_enabled,
         )
         session.add(row)
         session.commit()
@@ -475,6 +599,56 @@ async def delete_instrument(instrument_id: int, x_api_key: str = Header(None)):
         session.close()
 
 
+class LisVerifyRequest(BaseModel):
+    lis_api_key: str
+    lis_base_url: str | None = None
+
+
+class LisVerifyResponse(BaseModel):
+    success: bool
+    lis_instrument_id: str | None = None
+    name: str | None = None
+    vendor: str | None = None
+    model: str | None = None
+    error: str | None = None
+
+
+@app.post("/api/instruments/{instrument_id}/verify-lis", response_model=LisVerifyResponse)
+async def verify_with_lis(
+    instrument_id: int,
+    body: LisVerifyRequest,
+    x_api_key: str = Header(None),
+):
+    """Verify LIS API key dengan call GET /instrument."""
+    _verify_api_key(x_api_key)
+
+    from lib.lis_client import LisApiClient, LisApiError
+    from lib.db import get_setting
+
+    base_url = body.lis_base_url or get_setting(
+        "lis.base_url", "https://eazy.vespahobby.xyz"
+    )
+
+    try:
+        async with LisApiClient(
+            base_url=base_url, api_key=body.lis_api_key,
+            timeout=10, retry_max=1,
+        ) as client:
+            data = await client.get_instrument()
+        info = (data.get("data") or {}).get("instrument") or {}
+        return LisVerifyResponse(
+            success=True,
+            lis_instrument_id=info.get("instrument_id"),
+            name=info.get("name"),
+            vendor=info.get("vendor"),
+            model=info.get("model"),
+        )
+    except LisApiError as e:
+        return LisVerifyResponse(success=False, error=f"{e.status}: {e.message}")
+    except Exception as e:
+        return LisVerifyResponse(success=False, error=str(e))
+
+
 @app.post("/api/instruments/{instrument_id}/test-connection", response_model=MessageResponse)
 async def test_connection(instrument_id: int, x_api_key: str = Header(None)):
     """Test koneksi TCP ke alat."""
@@ -570,6 +744,74 @@ async def list_protocols(x_api_key: str = Header(None)):
     ]
 
 
+class ProtocolSwapRequest(BaseModel):
+    protocol: str
+
+
+@app.post(
+    "/api/instruments/{instrument_id}/protocol",
+    response_model=MessageResponse,
+)
+async def hot_swap_protocol(
+    instrument_id: int,
+    body: ProtocolSwapRequest,
+    x_api_key: str = Header(None),
+):
+    """Hot-swap protocol alat: update tbl_instrument.protocol + restart tcp_<id>."""
+    _verify_api_key(x_api_key)
+
+    new_proto = body.protocol.upper()
+    if new_proto not in _PROTOCOL_REGISTRY:
+        raise HTTPException(400, f"Protocol tidak valid: {body.protocol}")
+
+    db = DBManager()
+    session = db.get_session()
+    try:
+        row = (
+            session.query(TblInstrument)
+            .filter(TblInstrument.id == instrument_id)
+            .first()
+        )
+        if row is None:
+            raise HTTPException(404, f"Instrument ID {instrument_id} tidak ditemukan")
+
+        old_proto = row.protocol
+        if old_proto == new_proto:
+            return MessageResponse(
+                success=True,
+                message=f"Protocol sudah {new_proto}, tidak ada perubahan",
+            )
+
+        row.protocol = new_proto
+        session.commit()
+        logger.info(
+            f"Protocol hot-swap: instrument_id={instrument_id} "
+            f"{old_proto} → {new_proto}"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(500, f"Gagal update protocol: {e}")
+    finally:
+        session.close()
+
+    # Restart tcp service agar protokol baru di-load
+    svc_name = f"tcp_{instrument_id}"
+    watchdog.register_service(svc_name, instrument_id=instrument_id)
+    restart_msg = "service belum running, tidak di-restart"
+    if watchdog._is_process_alive(svc_name):
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, watchdog.restart_service, svc_name
+        )
+        restart_msg = result.get("message", "restart selesai")
+
+    return MessageResponse(
+        success=True,
+        message=f"Protocol → {new_proto}; {restart_msg}",
+    )
+
+
 # ============================================================
 # [Settings] — LIS bridging configuration
 # ============================================================
@@ -595,6 +837,13 @@ class SettingsResponse(BaseModel):
     lis_api_key_masked: str
     lis_api_key_set: bool
     local_ip: str
+    # LIS Bridging (EazyApp) — global settings
+    lis_base_url: str = ""
+    lis_http_timeout: int = 30
+    lis_retry_max: int = 3
+    lis_result_poll_interval: int = 5
+    lis_status_poll_interval: int = 2
+    lis_log_poll_interval: int = 5
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -602,6 +851,13 @@ class SettingsUpdateRequest(BaseModel):
     lis_api_url: Optional[str] = None
     # Kirim string kosong "" untuk hapus key; null untuk tidak ubah
     lis_api_key: Optional[str] = None
+    # LIS Bridging (EazyApp) global settings
+    lis_base_url: Optional[str] = None
+    lis_http_timeout: Optional[int] = None
+    lis_retry_max: Optional[int] = None
+    lis_result_poll_interval: Optional[int] = None
+    lis_status_poll_interval: Optional[int] = None
+    lis_log_poll_interval: Optional[int] = None
 
 
 class LisTestRequest(BaseModel):
@@ -638,6 +894,13 @@ def _build_settings_response() -> SettingsResponse:
         or ""
     )
 
+    def _int_setting(key, default):
+        v = get_setting(key, default=None)
+        try:
+            return int(v) if v is not None else default
+        except (TypeError, ValueError):
+            return default
+
     return SettingsResponse(
         order_api_url=f"http://{local_ip}:{order_port}/api/orders",
         order_api_key_set=bool(order_api_key),
@@ -645,6 +908,12 @@ def _build_settings_response() -> SettingsResponse:
         lis_api_key_masked=_mask_key(lis_key),
         lis_api_key_set=bool(lis_key),
         local_ip=local_ip,
+        lis_base_url=get_setting("lis.base_url", default="") or "",
+        lis_http_timeout=_int_setting("lis.http_timeout", 30),
+        lis_retry_max=_int_setting("lis.retry_max", 3),
+        lis_result_poll_interval=_int_setting("lis.result_poll_interval", 5),
+        lis_status_poll_interval=_int_setting("lis.status_poll_interval", 2),
+        lis_log_poll_interval=_int_setting("lis.log_poll_interval", 5),
     )
 
 
@@ -689,6 +958,24 @@ async def update_settings(
         if not ok:
             raise HTTPException(500, "Gagal simpan lis.api_key")
         logger.info("Setting lis.api_key updated")
+
+    # LIS Bridging (EazyApp) global settings
+    if body.lis_base_url is not None:
+        url = body.lis_base_url.strip()
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            raise HTTPException(400, "lis_base_url harus dimulai http:// atau https://")
+        set_setting("lis.base_url", url)
+        logger.info(f"Setting lis.base_url updated: {url or '(cleared)'}")
+    for field, key in (
+        ("lis_http_timeout", "lis.http_timeout"),
+        ("lis_retry_max", "lis.retry_max"),
+        ("lis_result_poll_interval", "lis.result_poll_interval"),
+        ("lis_status_poll_interval", "lis.status_poll_interval"),
+        ("lis_log_poll_interval", "lis.log_poll_interval"),
+    ):
+        v = getattr(body, field)
+        if v is not None:
+            set_setting(key, str(v))
 
     return _build_settings_response()
 
@@ -752,11 +1039,10 @@ async def test_lis_connection(
 LOG_DIR = "/var/log/midlab"
 
 
-def _resolve_log_file(service: str) -> str:
-    """Tentukan nama file log berdasarkan service name."""
-    if service.startswith("tcp_"):
-        return os.path.join(LOG_DIR, f"{service}.log")
-    return os.path.join(LOG_DIR, f"{service}.log")
+from lib.log_resolver import resolve_log_path as _resolve_log_path
+
+# Backwards-compat alias
+_resolve_log_file = _resolve_log_path
 
 
 @app.get("/api/logs/{service}")
@@ -1140,15 +1426,101 @@ async def dashboard(x_api_key: str = Header(None)):
         # Sort alerts by timestamp descending
         alerts.sort(key=lambda a: a.get("timestamp") or "", reverse=True)
 
+        # Per-instrument LIS bridge state
+        from lib.db import get_lis_queue_backlog
+        instruments_lis = []
+        for inst in session.query(TblInstrument).order_by(TblInstrument.id).all():
+            svc_name = f"lis_bridge_{inst.id}"
+            svc_info = services.get(svc_name) or {}
+            bridge_running = bool(svc_info.get("running") or svc_info.get("status") == "running")
+            instruments_lis.append({
+                "instrument_id": inst.id,
+                "name": inst.name,
+                "lis_bridge_enabled": bool(inst.lis_bridge_enabled),
+                "lis_bridge_status": "running" if bridge_running else "offline",
+                "last_status_pushed": inst.lis_status_pushed,
+                "queue_backlog": get_lis_queue_backlog(inst.id),
+                "lis_instrument_id": inst.lis_instrument_id,
+            })
+
         return DashboardResponse(
             services=services,
             results_summary=results_summary,
             orders_summary=orders_summary,
             alerts=alerts[:20],
+            instruments_lis=instruments_lis,
         )
 
     finally:
         session.close()
+
+
+# ============================================================
+# LIS Event Queue
+# ============================================================
+
+class LisEventResponse(BaseModel):
+    id: int
+    instrument_id: int
+    event_type: str
+    payload_json: dict
+    send_status: str
+    retry_count: int
+    error_message: Optional[str] = None
+    created_at: Optional[str] = None
+    sent_at: Optional[str] = None
+
+
+@app.get("/api/lis-events", response_model=list[LisEventResponse])
+async def list_lis_events(
+    instrument_id: Optional[int] = None,
+    status: Optional[str] = None,
+    event_type: Optional[str] = None,
+    limit: int = 100,
+    x_api_key: str = Header(None),
+):
+    _verify_api_key(x_api_key)
+    db = DBManager()
+    session = db.get_session()
+    try:
+        from lib.db import TblLisEventQueue
+        q = session.query(TblLisEventQueue)
+        if instrument_id:
+            q = q.filter(TblLisEventQueue.instrument_id == instrument_id)
+        if status:
+            q = q.filter(TblLisEventQueue.send_status == status)
+        if event_type:
+            q = q.filter(TblLisEventQueue.event_type == event_type)
+        rows = q.order_by(TblLisEventQueue.id.desc()).limit(limit).all()
+        return [
+            LisEventResponse(
+                id=r.id, instrument_id=r.instrument_id,
+                event_type=r.event_type, payload_json=r.payload_json,
+                send_status=r.send_status, retry_count=r.retry_count or 0,
+                error_message=r.error_message,
+                created_at=r.created_at.isoformat() if r.created_at else None,
+                sent_at=r.sent_at.isoformat() if r.sent_at else None,
+            )
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.post("/api/lis-events/{event_id}/retry", response_model=MessageResponse)
+async def retry_lis_event(event_id: int, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    from lib.db import update_lis_event_status
+    ok = update_lis_event_status(event_id, "pending", error_message=None)
+    return MessageResponse(success=ok, message="event reset to pending" if ok else "event not found")
+
+
+@app.post("/api/lis-events/{event_id}/skip", response_model=MessageResponse)
+async def skip_lis_event(event_id: int, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    from lib.db import update_lis_event_status
+    ok = update_lis_event_status(event_id, "skipped", error_message="manually skipped")
+    return MessageResponse(success=ok, message="event skipped" if ok else "event not found")
 
 
 # ============================================================

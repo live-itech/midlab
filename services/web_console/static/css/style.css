@@ -159,16 +159,22 @@ a:hover { text-decoration: underline; }
 }
 
 .sidebar-brand-icon {
-  width: 32px;
-  height: 32px;
-  background: var(--blue);
+  width: 36px;
+  height: 36px;
+  background: #fff;
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-  color: #fff;
+  padding: 3px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.sidebar-brand-icon img {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .sidebar-brand-text {

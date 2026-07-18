@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 
 from lib.db import save_result
 from lib.utils import get_logger
+from lib.comm_logger import CommLogger
+from protocols.base import is_mllp_protocol
 
 
 # Konstanta boundary detection
@@ -52,6 +54,7 @@ class ResultReceiver:
         self._lock = socket_lock or asyncio.Lock()
         self._logger = get_logger("tcp_socket", instrument_config.id)
         self._inst_name = instrument_config.name
+        self._comm = CommLogger.for_instrument(instrument_config.id)
 
         # Buffer management
         self._buffer = bytearray()
@@ -87,7 +90,7 @@ class ResultReceiver:
 
         if protocol in ("ASTM", "COBAS_C111"):
             return await self._handle_astm_data(writer)
-        elif protocol == "HL7":
+        elif is_mllp_protocol(protocol):
             return await self._handle_hl7_data(writer)
         else:
             # Protocol lain: coba parse langsung
@@ -126,6 +129,7 @@ class ResultReceiver:
                 self._logger.info(f"[{self._inst_name}] ENQ diterima, sesi dimulai")
                 # Kirim ACK
                 async with self._lock:
+                    self._comm.tx(bytes([ASTM_ACK]))
                     writer.write(bytes([ASTM_ACK]))
                     await writer.drain()
                 continue
@@ -168,6 +172,7 @@ class ResultReceiver:
                 )
                 # Kirim ACK per frame
                 async with self._lock:
+                    self._comm.tx(bytes([ASTM_ACK]))
                     writer.write(bytes([ASTM_ACK]))
                     await writer.drain()
                 continue
@@ -321,8 +326,29 @@ class ResultReceiver:
         return msg
 
     async def _send_hl7_ack(self, raw_message: bytes, writer: asyncio.StreamWriter):
-        """Kirim ACK message HL7 sebagai response ke message yang diterima."""
+        """
+        Kirim ACK message HL7 sebagai response ke message yang diterima.
+
+        Protocol module boleh menyediakan build_ack_response() untuk membangun
+        ACK versinya sendiri — dipakai driver spesifik alat yang layout MSH/MSA
+        ACK-nya berbeda dari HL7 generic (mis. HL7_MINDRAY_BS200E).
+        """
         try:
+            build_ack = getattr(self._protocol, "build_ack_response", None)
+            if build_ack is not None:
+                ack_bytes = build_ack(raw_message, self._config.to_dict())
+                if ack_bytes:
+                    async with self._lock:
+                        self._comm.tx(ack_bytes)
+                        writer.write(ack_bytes)
+                        await writer.drain()
+                    self._logger.info(f"[{self._inst_name}] ACK sent")
+                else:
+                    self._logger.warning(
+                        f"[{self._inst_name}] Protocol module tidak menghasilkan ACK"
+                    )
+                return
+
             from protocols.hl7.parser import HL7Parser
             from protocols.hl7.builder import HL7Builder
             from protocols.hl7.constants import ACK_AA
@@ -343,6 +369,7 @@ class ResultReceiver:
             if msh:
                 ack_bytes = builder.build_ack(msh, ACK_AA)
                 async with self._lock:
+                    self._comm.tx(ack_bytes)
                     writer.write(ack_bytes)
                     await writer.drain()
                 self._logger.info(f"[{self._inst_name}] ACK sent")

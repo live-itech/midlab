@@ -3,6 +3,12 @@
 {% block topbar_title %}Services{% endblock %}
 
 {% block content %}
+<style>
+  /* Row merah saat service tcp_<id> tidak bisa connect ke alat */
+  tr.row-danger td { background: rgba(220, 38, 38, 0.08); }
+  tr.row-danger:hover td { background: rgba(220, 38, 38, 0.14); }
+</style>
+
 <div class="page-header">
   <h1>Services</h1>
   <p>Kelola dan monitor semua service MidLab</p>
@@ -51,31 +57,65 @@
       tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted" style="padding:24px">Tidak ada service</td></tr>';
       return;
     }
-    tbody.innerHTML = serviceList.map(s => {
-      const statusBadge = s.running
-        ? '<span class="badge badge-green"><span class="badge-dot"></span>Running</span>'
-        : '<span class="badge badge-red"><span class="badge-dot"></span>Stopped</span>';
+    const rows = serviceList.map(s => {
+      // Virtual service (log-only, mis. tcp_<id>__comm) — tidak bisa dikontrol.
+      const isVirtual = s.name.includes('__comm');
+
+      // Row merah kalau service tcp_<id> running tapi alat offline/error.
+      const isDisconnected = !isVirtual && s.running
+        && (s.connection_state === 'offline' || s.connection_state === 'error');
+      const rowClass = isDisconnected ? 'row-danger' : '';
+
+      // Tentukan badge status:
+      // - virtual                 → biru "Virtual"
+      // - process stopped         → merah "Stopped"
+      // - connection_state online → hijau "Connected"
+      // - connection_state offline→ merah "Disconnected" (tooltip error)
+      // - connection_state error  → merah "Error" (tooltip error)
+      // - unknown/no event        → hijau "Running" (fallback lama)
+      let statusBadge;
+      if (isVirtual) {
+        statusBadge = '<span class="badge badge-blue"><span class="badge-dot"></span>Virtual</span>';
+      } else if (!s.running) {
+        statusBadge = '<span class="badge badge-red"><span class="badge-dot"></span>Stopped</span>';
+      } else if (s.connection_state === 'offline') {
+        const tip = s.connection_error ? ` title="${App.escapeHtml(s.connection_error)}"` : '';
+        statusBadge = `<span class="badge badge-red"${tip}><span class="badge-dot"></span>Disconnected</span>`;
+      } else if (s.connection_state === 'error') {
+        const tip = s.connection_error ? ` title="${App.escapeHtml(s.connection_error)}"` : '';
+        statusBadge = `<span class="badge badge-red"${tip}><span class="badge-dot"></span>Error</span>`;
+      } else if (s.connection_state === 'online') {
+        statusBadge = '<span class="badge badge-green"><span class="badge-dot"></span>Connected</span>';
+      } else {
+        statusBadge = '<span class="badge badge-green"><span class="badge-dot"></span>Running</span>';
+      }
+
       const autoChecked = s.auto_restart ? 'checked' : '';
-      return `<tr>
-        <td class="font-bold">${App.escapeHtml(s.name)}</td>
-        <td>${statusBadge}</td>
-        <td class="font-mono">${s.pid || '-'}</td>
-        <td>${s.uptime != null ? App.formatUptime(s.uptime) : '-'}</td>
-        <td>
-          <label class="toggle">
+      const autoCell = isVirtual
+        ? '<span class="text-muted">—</span>'
+        : `<label class="toggle">
             <input type="checkbox" ${autoChecked} onchange="toggleAutoRestart('${App.escapeHtml(s.name)}', this.checked)">
             <span class="toggle-slider"></span>
-          </label>
-        </td>
-        <td>
-          <div class="d-flex gap-2">
+          </label>`;
+
+      const actionCell = isVirtual
+        ? '<span class="text-muted">log-only</span>'
+        : `<div class="d-flex gap-2">
             ${!s.running ? `<button class="btn btn-success btn-xs" onclick="svcAction('start','${App.escapeHtml(s.name)}')">Start</button>` : ''}
             ${s.running ? `<button class="btn btn-danger btn-xs" onclick="svcAction('stop','${App.escapeHtml(s.name)}')">Stop</button>` : ''}
             ${s.running ? `<button class="btn btn-warning btn-xs" onclick="svcAction('restart','${App.escapeHtml(s.name)}')">Restart</button>` : ''}
-          </div>
-        </td>
+          </div>`;
+
+      return `<tr class="${rowClass}">
+        <td class="font-bold">${App.escapeHtml(s.display_name || s.name)}</td>
+        <td>${statusBadge}</td>
+        <td class="font-mono">${s.pid || '-'}</td>
+        <td>${s.uptime != null ? App.formatUptime(s.uptime) : '-'}</td>
+        <td>${autoCell}</td>
+        <td>${actionCell}</td>
       </tr>`;
     }).join('');
+    tbody.innerHTML = rows;
   }
 
   window.svcAction = async function(action, name) {
@@ -86,12 +126,29 @@
       );
       if (!ok) return;
     }
+
+    // Optimistic update — flip state lokal sebelum API balas
+    // supaya UI tidak nampak "stuck" selama watchdog.stop blocking.
+    const target = serviceList.find(s => s.name === name);
+    if (target) {
+      if (action === 'stop') {
+        target.running = false;
+        target.pid = null;
+        target.uptime = null;
+      } else if (action === 'start') {
+        target.running = true;
+      }
+      renderTable();
+    }
+
     try {
       await App.api(`/api/services/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
       App.toast(`Service ${name} berhasil di-${action}`, 'success');
-      loadServices();
     } catch (err) {
       App.toast(err.message, 'error');
+    } finally {
+      // Sync ke state asli dari server (auto-koreksi kalau optimistic salah)
+      loadServices();
     }
   };
 

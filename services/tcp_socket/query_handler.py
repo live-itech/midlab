@@ -6,6 +6,18 @@ Deteksi query (ENQ/QBP) dari alat, lookup order di database,
 kirim response atau not-found, update status order.
 
 State machine: WAIT_ENQ → ENQ_RX → LOOKUP → SEND_RESP → WAIT_ACK → UPDATE
+
+Dua jenis query didukung, dibedakan lewat `type` yang dikembalikan
+protocol_module.handle_enq():
+
+- `query` (default)  — alat minta order untuk satu sample_id/barcode
+- `group_query`      — alat minta semua order yang belum dikirim sekaligus
+                       (batch download), satu pesan per order
+- `cancel`           — alat membatalkan group download yang sedang berjalan
+
+Group download hanya aktif bila protocol module menyediakan
+format_group_query_response(); protocol tanpa method itu tetap membalas
+not-found seperti sebelumnya.
 """
 
 import asyncio
@@ -13,6 +25,8 @@ from enum import Enum
 
 from lib.db import DBManager, TblOrder, update_order_status
 from lib.utils import get_logger
+from lib.comm_logger import CommLogger
+from protocols.base import is_mllp_protocol
 
 
 # Konstanta ASTM
@@ -20,6 +34,12 @@ ASTM_ACK = 0x06
 ASTM_NAK = 0x15
 ASTM_EOT = 0x04
 ASTM_ENQ = 0x05
+
+# Batas order yang dikirim dalam satu group download. Alat minta "semua sampel
+# hari ini"; kalau backlog order menumpuk (mis. LIS baru pulih), pengiriman
+# ratusan DSR sekaligus menahan receive loop terlalu lama. Sisanya ikut di
+# group query berikutnya karena statusnya masih pending.
+GROUP_QUERY_MAX_ORDERS = 100
 
 
 class QueryState(Enum):
@@ -65,8 +85,13 @@ class QueryHandler:
         self._lock = socket_lock
         self._logger = get_logger("tcp_socket", instrument_config.id)
         self._inst_name = instrument_config.name
+        self._comm = CommLogger.for_instrument(instrument_config.id)
 
         self._state = QueryState.WAIT_ENQ
+
+        # Data mentah terakhir saat menunggu ACK — dipakai mendeteksi pesan
+        # cancel yang datang di posisi ACK saat group download.
+        self._last_ack_data = b""
 
         # Statistik
         self._total_queries = 0
@@ -103,11 +128,23 @@ class QueryHandler:
             sample_id = enq_info.get("sample_id", "")
             patient_id = enq_info.get("patient_id", "")
             query_msh = enq_info.get("_msh")  # HL7: MSH dari query message
+            query_type = enq_info.get("type", "")
 
             self._logger.info(
-                f"[{self._inst_name}] Query parsed: "
+                f"[{self._inst_name}] Query parsed: type={query_type or 'query'}, "
                 f"sample_id={sample_id}, patient_id={patient_id}"
             )
+
+            # Cancel di luar group download yang sedang jalan: tidak ada yang
+            # perlu dihentikan, dan alat tidak menunggu response.
+            if query_type == "cancel":
+                self._logger.info(
+                    f"[{self._inst_name}] Cancel diterima saat idle — diabaikan"
+                )
+                return True
+
+            if query_type == "group_query":
+                return await self._handle_group_query(instrument_dict, query_msh)
 
             # LOOKUP — Cari order di database
             self._set_state(QueryState.LOOKUP)
@@ -130,28 +167,14 @@ class QueryHandler:
 
                 # UPDATE — Update status order
                 self._set_state(QueryState.UPDATE)
+                await self._update_order_result(order_id, success)
+
                 if success:
-                    await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        update_order_status,
-                        order_id,
-                        "sent",
-                        None,
-                        None,
-                    )
                     self._total_found += 1
                     self._logger.info(
                         f"[{self._inst_name}] Order #{order_id} sent via query response"
                     )
                 else:
-                    await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        update_order_status,
-                        order_id,
-                        "failed",
-                        "query_handler_send",
-                        "ACK timeout atau NAK saat query response",
-                    )
                     self._logger.warning(
                         f"[{self._inst_name}] Order #{order_id} query response failed"
                     )
@@ -182,6 +205,138 @@ class QueryHandler:
         """Update reader/writer saat reconnect."""
         self._reader = reader
         self._writer = writer
+
+    # ============================================================
+    # Group Download — alat minta semua order sekaligus
+    # ============================================================
+
+    async def _handle_group_query(self, instrument_dict: dict,
+                                  query_msh: dict = None) -> bool:
+        """
+        Handle group download: kirim seluruh order pending untuk alat ini,
+        satu pesan per order, lalu update status masing-masing.
+
+        Alat boleh membatalkan di tengah jalan — pengiriman berhenti setelah
+        order yang sedang dikirim selesai, sisanya tetap pending dan ikut di
+        group query berikutnya.
+        """
+        formatter = getattr(self._protocol, "format_group_query_response", None)
+        if formatter is None:
+            self._logger.warning(
+                f"[{self._inst_name}] Protocol {self._config.protocol} belum "
+                f"mendukung group download — dibalas not-found"
+            )
+            self._set_state(QueryState.SEND_RESP)
+            await self._send_not_found(instrument_dict, query_msh)
+            self._total_not_found += 1
+            return True
+
+        # LOOKUP — ambil order yang belum terkirim ke alat ini
+        self._set_state(QueryState.LOOKUP)
+        orders = await self._lookup_pending_orders(GROUP_QUERY_MAX_ORDERS)
+
+        if not orders:
+            self._logger.info(
+                f"[{self._inst_name}] Group download: tidak ada order pending"
+            )
+            self._set_state(QueryState.SEND_RESP)
+            await self._send_not_found(instrument_dict, query_msh)
+            self._total_not_found += 1
+            return True
+
+        self._logger.info(
+            f"[{self._inst_name}] Group download: {len(orders)} order pending"
+        )
+
+        # SEND_RESP — protocol module membangun satu payload per order,
+        # sejajar berdasarkan index (payload[i] milik orders[i]).
+        self._set_state(QueryState.SEND_RESP)
+        try:
+            payloads = formatter(
+                [o.order_json or {} for o in orders], instrument_dict, query_msh
+            )
+        except Exception as e:
+            self._logger.error(
+                f"[{self._inst_name}] Error formatting group response: {e}"
+            )
+            return False
+
+        if len(payloads) != len(orders):
+            self._logger.error(
+                f"[{self._inst_name}] Group response tidak sejajar: "
+                f"{len(payloads)} payload untuk {len(orders)} order — dibatalkan"
+            )
+            return False
+
+        terkirim = 0
+        for index, (order, payload) in enumerate(zip(orders, payloads)):
+            self._set_state(QueryState.SEND_RESP)
+            async with self._lock:
+                success = await self._send_data(payload)
+
+            # Cancel dicek sebelum update status: order yang kena cancel bukan
+            # gagal kirim, jadi biarkan `pending` supaya ikut group query
+            # berikutnya. Kalau ditandai `failed` ia keluar dari antrian dan
+            # baru terkirim lagi setelah retry manual.
+            if not success and self._is_cancel_query(self._last_ack_data):
+                self._logger.info(
+                    f"[{self._inst_name}] Group download dibatalkan alat setelah "
+                    f"{terkirim}/{len(orders)} order — order #{order.id} dan "
+                    f"sisanya tetap pending"
+                )
+                break
+
+            self._set_state(QueryState.UPDATE)
+            await self._update_order_result(order.id, success)
+
+            if success:
+                terkirim += 1
+                self._total_found += 1
+                continue
+
+            self._logger.warning(
+                f"[{self._inst_name}] Group download berhenti di order "
+                f"#{order.id} ({index + 1}/{len(orders)}): response tidak di-ACK"
+            )
+            break
+
+        self._logger.info(
+            f"[{self._inst_name}] Group download selesai: "
+            f"{terkirim}/{len(orders)} order terkirim"
+        )
+        return True
+
+    async def _update_order_result(self, order_id: int, success: bool):
+        """Tandai order sebagai sent/failed setelah percobaan kirim."""
+        if success:
+            await asyncio.get_event_loop().run_in_executor(
+                None, update_order_status, order_id, "sent", None, None,
+            )
+        else:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                update_order_status,
+                order_id,
+                "failed",
+                "query_handler_send",
+                "ACK timeout atau NAK saat query response",
+            )
+
+    def _is_cancel_query(self, data: bytes) -> bool:
+        """
+        True bila data yang diterima (saat menunggu ACK) ternyata pesan cancel
+        dari alat, bukan acknowledgment.
+        """
+        if not data:
+            return False
+        try:
+            if not self._protocol.is_enq(data):
+                return False
+            info = self._protocol.handle_enq(data, self._config.to_dict())
+            return info.get("type") == "cancel"
+        except Exception as e:
+            self._logger.warning(f"[{self._inst_name}] Gagal cek cancel: {e}")
+            return False
 
     # ============================================================
     # Database Lookup
@@ -243,6 +398,53 @@ class QueryHandler:
 
         return await asyncio.get_event_loop().run_in_executor(None, _db_lookup)
 
+    async def _lookup_pending_orders(self, limit: int) -> list:
+        """
+        Ambil order pending untuk alat ini (paling lama duluan), untuk group
+        download.
+
+        Rentang waktu di query alat (QRF-2/QRF-3, "semua sampel hari ini" vs
+        "sampel terbaru") sengaja tidak dipakai sebagai filter: flag `pending`
+        sudah berarti "belum pernah dikirim ke alat", dan order otomatis jadi
+        `sent` setelah terkirim — jadi group query berikutnya hanya dapat yang
+        baru, persis seperti maksud mode "sampel terbaru". Membandingkan jam
+        alat (waktu lokal) dengan created_at (UTC) justru berisiko membuang
+        order secara diam-diam.
+        """
+        def _db_lookup():
+            db = DBManager()
+            session = db.get_session()
+            try:
+                orders = (
+                    session.query(TblOrder)
+                    .filter(
+                        TblOrder.instrument_id == self._config.id,
+                        TblOrder.instrument_status == "pending",
+                    )
+                    .order_by(TblOrder.created_at.asc())
+                    .limit(limit)
+                    .all()
+                )
+                for order in orders:
+                    session.expunge(order)
+
+                if len(orders) == limit:
+                    self._logger.warning(
+                        f"[{self._inst_name}] Group download dibatasi {limit} order; "
+                        f"sisanya menyusul di group query berikutnya"
+                    )
+                return orders
+
+            except Exception as e:
+                self._logger.error(
+                    f"[{self._inst_name}] DB lookup group error: {e}"
+                )
+                return []
+            finally:
+                session.close()
+
+        return await asyncio.get_event_loop().run_in_executor(None, _db_lookup)
+
     # ============================================================
     # Send Response
     # ============================================================
@@ -260,7 +462,7 @@ class QueryHandler:
         protocol = self._config.protocol.upper()
 
         try:
-            if protocol == "HL7" and query_msh and hasattr(self._protocol, "format_query_response_full"):
+            if is_mllp_protocol(protocol) and query_msh and hasattr(self._protocol, "format_query_response_full"):
                 formatted = self._protocol.format_query_response_full(
                     order_json, instrument_dict, query_msh
                 )
@@ -284,39 +486,45 @@ class QueryHandler:
         protocol = self._config.protocol.upper()
 
         try:
-            if protocol == "HL7" and query_msh and hasattr(self._protocol, "format_query_not_found_full"):
+            if is_mllp_protocol(protocol) and query_msh and hasattr(self._protocol, "format_query_not_found_full"):
                 formatted = self._protocol.format_query_not_found_full(
                     instrument_dict, query_msh
                 )
             else:
                 formatted = self._protocol.format_query_not_found(instrument_dict)
 
+            # Sebagian alat tidak membalas response not-found sama sekali
+            # (Mindray: QCK dengan QAK NF tidak di-ACK). Menunggu ACK di situ
+            # bukan cuma stall — read()-nya ikut menelan pesan alat berikutnya.
+            expect_ack = getattr(self._protocol, "ACK_EXPECTED_ON_NOT_FOUND", True)
+
             async with self._lock:
-                await self._send_data(formatted)
+                await self._send_data(formatted, expect_ack=expect_ack)
 
         except Exception as e:
             self._logger.warning(
                 f"[{self._inst_name}] Error sending not-found: {e}"
             )
 
-    async def _send_data(self, formatted) -> bool:
+    async def _send_data(self, formatted, expect_ack: bool = True) -> bool:
         """
         Kirim data ke alat (protocol-aware).
 
         ASTM (list of frames): ENQ → ACK → frames (ACK per frame) → EOT
-        HL7 (bytes):           send message → wait ACK
+        HL7 (bytes):           send message → wait ACK (bila expect_ack)
         """
         protocol = self._config.protocol.upper()
 
         if protocol == "ASTM" and isinstance(formatted, list):
             return await self._send_astm_frames(formatted)
         else:
-            return await self._send_hl7_message(formatted)
+            return await self._send_hl7_message(formatted, expect_ack=expect_ack)
 
     async def _send_astm_frames(self, frames: list) -> bool:
         """Kirim frames ASTM dengan handshake."""
         try:
             # Kirim ENQ
+            self._comm.tx(bytes([ASTM_ENQ]))
             self._writer.write(bytes([ASTM_ENQ]))
             await self._writer.drain()
 
@@ -332,6 +540,7 @@ class QueryHandler:
             # Kirim frame satu per satu
             self._set_state(QueryState.SEND_RESP)
             for i, frame in enumerate(frames):
+                self._comm.tx(frame)
                 self._writer.write(frame)
                 await self._writer.drain()
 
@@ -345,6 +554,7 @@ class QueryHandler:
                 self._set_state(QueryState.SEND_RESP)
 
             # Kirim EOT
+            self._comm.tx(bytes([ASTM_EOT]))
             self._writer.write(bytes([ASTM_EOT]))
             await self._writer.drain()
 
@@ -356,11 +566,15 @@ class QueryHandler:
             )
             return False
 
-    async def _send_hl7_message(self, message: bytes) -> bool:
-        """Kirim HL7 message dan tunggu ACK."""
+    async def _send_hl7_message(self, message: bytes, expect_ack: bool = True) -> bool:
+        """Kirim HL7 message; tunggu ACK kecuali alat memang tidak membalas."""
         try:
+            self._comm.tx(message)
             self._writer.write(message)
             await self._writer.drain()
+
+            if not expect_ack:
+                return True
 
             self._set_state(QueryState.WAIT_ACK)
             ack = await self._wait_for_ack(timeout=15)
@@ -377,7 +591,14 @@ class QueryHandler:
     # ============================================================
 
     async def _wait_for_ack(self, timeout: float = 15) -> str:
-        """Tunggu ACK dari alat."""
+        """
+        Tunggu ACK dari alat.
+
+        Data mentahnya disimpan di `_last_ack_data` karena yang datang belum
+        tentu ACK — saat group download, alat bisa mengirim pesan cancel di
+        posisi ini (lihat _is_cancel_query).
+        """
+        self._last_ack_data = b""
         try:
             data = await asyncio.wait_for(
                 self._reader.read(4096),
@@ -385,6 +606,8 @@ class QueryHandler:
             )
             if not data:
                 return "TIMEOUT"
+            self._comm.rx(data)
+            self._last_ack_data = data
 
             return self._protocol.handle_ack(data)
 

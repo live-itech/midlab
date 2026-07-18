@@ -44,7 +44,7 @@ class TblInstrument(Base):
     name = Column(String(255), nullable=False)
     ip_address = Column(String(45), nullable=False)
     port = Column(Integer, nullable=False)
-    protocol = Column(Enum("ASTM", "HL7", "BCI", name="protocol_enum"), nullable=False)
+    protocol = Column(String(50), nullable=False)
     mode = Column(
         Enum("unidirectional", "bidirectional", name="mode_enum"),
         nullable=False,
@@ -62,6 +62,14 @@ class TblInstrument(Base):
     )
     is_active = Column(Boolean, default=True)
 
+    # LIS bridging columns (lihat docs/superpowers/specs/2026-05-13-lis-bridging-eazyapp-design.md)
+    lis_instrument_id   = Column(String(50),  nullable=True)
+    lis_api_key         = Column(String(255), nullable=True)
+    order_poll_interval = Column(Integer,     default=10)
+    last_lis_sync_at    = Column(DateTime,    nullable=True)
+    lis_status_pushed   = Column(String(20),  nullable=True)
+    lis_bridge_enabled  = Column(Boolean,     default=False)
+
 
 class TblResult(Base):
     """Tabel hasil pemeriksaan dari alat, dikirim ke LIS oleh ResultSenderService."""
@@ -69,7 +77,9 @@ class TblResult(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     instrument_id = Column(Integer, nullable=False)
-    protocol = Column(String(10), nullable=False)
+    # Selebar tbl_instrument.protocol — nama driver spesifik alat bisa panjang
+    # (mis. HL7_MINDRAY_BS200E). Lihat scripts/migrate_result_protocol_width.sql.
+    protocol = Column(String(50), nullable=False)
     raw_data = Column(Text, nullable=True)
     result_json = Column(JSON, nullable=True)
     send_status = Column(
@@ -134,6 +144,33 @@ class TblSetting(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class TblLisEventQueue(Base):
+    """
+    Antrian event yang dikirim ke LIS via REST API.
+    Penulis: TCPSocketService (status events on connect/disconnect/error).
+    Pembaca: LisBridgeService.StatusReporter.
+    Handoff flag-based sesuai rule CLAUDE.md.
+    """
+    __tablename__ = "tbl_lis_event_queue"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    instrument_id = Column(Integer, nullable=False)
+    event_type    = Column(
+        Enum("status", "log", name="lis_event_type_enum"),
+        nullable=False,
+    )
+    payload_json  = Column(JSON, nullable=False)
+    send_status   = Column(
+        Enum("pending", "sent", "failed", "skipped", name="lis_event_status_enum"),
+        nullable=False,
+        default="pending",
+    )
+    retry_count   = Column(Integer, default=0)
+    error_message = Column(Text, nullable=True)
+    created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    sent_at       = Column(DateTime, nullable=True)
 
 
 # ============================================================
@@ -254,10 +291,12 @@ def update_result_status(
     result_id: int,
     status: str,
     error_message: str = None,
+    *,
+    increment_retry: bool = False,
 ):
     """
     Update send_status di tbl_result.
-    Owned by ResultSenderService.
+    Owned by ResultSenderService / LisBridgeService.ResultPusher.
     """
     db = DBManager()
     session = db.get_session()
@@ -266,11 +305,14 @@ def update_result_status(
         if result is None:
             return False
         result.send_status = status
+        if error_message is not None:
+            result.error_message = error_message
         if status == "sent":
             result.sent_at = datetime.now(timezone.utc)
         if status == "failed":
             result.retry_count = (result.retry_count or 0) + 1
-            result.error_message = error_message
+        elif increment_retry:
+            result.retry_count = (result.retry_count or 0) + 1
         session.commit()
         return True
     except Exception:
@@ -417,5 +459,248 @@ def save_order(instrument_id: int, order_json: dict) -> int | None:
     except Exception:
         session.rollback()
         return None
+    finally:
+        session.close()
+
+
+def get_lis_queue_backlog(instrument_id: int) -> int:
+    """Hitung jumlah event pending di tbl_lis_event_queue untuk alat ini."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        return session.query(TblLisEventQueue).filter(
+            TblLisEventQueue.instrument_id == instrument_id,
+            TblLisEventQueue.send_status == "pending",
+        ).count()
+    finally:
+        session.close()
+
+
+def get_instrument_by_id(instrument_id: int):
+    """Ambil row TblInstrument by id, atau None."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        return session.query(TblInstrument).filter(
+            TblInstrument.id == instrument_id
+        ).first()
+    finally:
+        session.close()
+
+
+def update_instrument_lis_sync(instrument_id: int, lis_instrument_id: str) -> bool:
+    """Update lis_instrument_id + last_lis_sync_at di TblInstrument."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        row = session.query(TblInstrument).filter(
+            TblInstrument.id == instrument_id
+        ).first()
+        if not row:
+            return False
+        row.lis_instrument_id = lis_instrument_id
+        row.last_lis_sync_at = datetime.now(timezone.utc)
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        return False
+    finally:
+        session.close()
+
+
+def get_log_cursor(instrument_id: int):
+    """Ambil cursor terakhir log yang sudah di-push ke LIS."""
+    raw = get_setting(f"lis.log_cursor.{instrument_id}")
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def set_log_cursor(instrument_id: int, ts) -> bool:
+    """Simpan cursor terakhir log yang sudah di-push ke LIS."""
+    return set_setting(f"lis.log_cursor.{instrument_id}", ts.isoformat())
+
+
+def get_service_logs_after(cursor, level_in: tuple, limit: int = 100):
+    """Ambil log dari tbl_service_log setelah cursor, filter level."""
+    db = DBManager()
+    session = db.get_session()
+    try:
+        q = session.query(TblServiceLog).filter(
+            TblServiceLog.level.in_(level_in),
+        )
+        if cursor:
+            q = q.filter(TblServiceLog.logged_at > cursor)
+        return q.order_by(TblServiceLog.logged_at.asc()).limit(limit).all()
+    finally:
+        session.close()
+
+
+def order_exists_by_lis_id(instrument_id: int, lis_order_id: str) -> bool:
+    """Cek apakah tbl_order sudah punya entry untuk (instrument_id, order_json.order_id)."""
+    from sqlalchemy import text
+    db = DBManager()
+    session = db.get_session()
+    try:
+        dialect = session.get_bind().dialect.name
+        if dialect == "mysql":
+            row = session.execute(
+                text(
+                    "SELECT 1 FROM tbl_order "
+                    "WHERE instrument_id = :iid "
+                    "AND JSON_UNQUOTE(JSON_EXTRACT(order_json, '$.order_id')) = :oid "
+                    "LIMIT 1"
+                ),
+                {"iid": instrument_id, "oid": lis_order_id},
+            ).first()
+        else:
+            row = session.execute(
+                text(
+                    "SELECT 1 FROM tbl_order "
+                    "WHERE instrument_id = :iid "
+                    "AND order_json LIKE :pattern "
+                    "LIMIT 1"
+                ),
+                {"iid": instrument_id, "pattern": f'%"order_id": "{lis_order_id}"%'},
+            ).first()
+        return row is not None
+    finally:
+        session.close()
+
+
+def enqueue_lis_event(instrument_id: int, event_type: str, payload: dict) -> int | None:
+    """
+    Tambahkan event ke tbl_lis_event_queue dengan status pending.
+    Dipanggil oleh TCPSocketService saat ada perubahan status koneksi.
+    Returns: ID record baru atau None jika gagal.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        ev = TblLisEventQueue(
+            instrument_id=instrument_id,
+            event_type=event_type,
+            payload_json=payload,
+            send_status="pending",
+        )
+        session.add(ev)
+        session.commit()
+        return ev.id
+    except Exception:
+        session.rollback()
+        return None
+    finally:
+        session.close()
+
+
+def get_latest_status_per_instrument() -> dict[int, dict]:
+    """
+    Untuk tiap instrument, ambil event_type='status' terbaru dari
+    tbl_lis_event_queue.
+
+    Returns:
+        Dict {instrument_id: {"status": str, "error_message": str|None,
+                              "at": datetime}}.
+        Empty dict kalau DB error atau tidak ada event sama sekali.
+
+    Dipakai oleh Web Console untuk menentukan apakah row service tcp_<id>
+    harus diwarnai merah (status offline/error) di menu Services.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        # Subquery: id terbesar per instrument_id untuk event_type='status'.
+        # Lalu join kembali ke tabel utama untuk ambil payload.
+        from sqlalchemy import func
+
+        subq = (
+            session.query(
+                TblLisEventQueue.instrument_id,
+                func.max(TblLisEventQueue.id).label("max_id"),
+            )
+            .filter(TblLisEventQueue.event_type == "status")
+            .group_by(TblLisEventQueue.instrument_id)
+            .subquery()
+        )
+        rows = (
+            session.query(TblLisEventQueue)
+            .join(
+                subq,
+                (TblLisEventQueue.id == subq.c.max_id),
+            )
+            .all()
+        )
+        result: dict[int, dict] = {}
+        for r in rows:
+            payload = r.payload_json or {}
+            result[r.instrument_id] = {
+                "status": payload.get("status"),
+                "error_message": payload.get("error_message"),
+                "at": r.created_at,
+            }
+        return result
+    except Exception:
+        return {}
+    finally:
+        session.close()
+
+
+def get_pending_lis_events(
+    instrument_id: int,
+    event_type: str | None = None,
+    limit: int = 50,
+) -> list:
+    """
+    Ambil event pending dari tbl_lis_event_queue untuk dikirim ke LIS.
+    Dibaca oleh LisBridgeService.StatusReporter.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        q = session.query(TblLisEventQueue).filter(
+            TblLisEventQueue.instrument_id == instrument_id,
+            TblLisEventQueue.send_status == "pending",
+        )
+        if event_type:
+            q = q.filter(TblLisEventQueue.event_type == event_type)
+        return q.order_by(TblLisEventQueue.id.asc()).limit(limit).all()
+    finally:
+        session.close()
+
+
+def update_lis_event_status(
+    event_id: int,
+    status: str,
+    error_message: str | None = None,
+    increment_retry: bool = False,
+) -> bool:
+    """
+    Update send_status di tbl_lis_event_queue.
+    Owned by LisBridgeService.StatusReporter.
+    """
+    db = DBManager()
+    session = db.get_session()
+    try:
+        ev = session.query(TblLisEventQueue).filter(
+            TblLisEventQueue.id == event_id
+        ).first()
+        if not ev:
+            return False
+        ev.send_status = status
+        if error_message is not None:
+            ev.error_message = error_message
+        if increment_retry:
+            ev.retry_count = (ev.retry_count or 0) + 1
+        if status == "sent":
+            ev.sent_at = datetime.now(timezone.utc)
+        session.commit()
+        return True
+    except Exception:
+        session.rollback()
+        return False
     finally:
         session.close()

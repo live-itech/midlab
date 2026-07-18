@@ -14,6 +14,7 @@ from enum import Enum
 
 from lib.db import get_pending_orders, update_order_status
 from lib.utils import get_logger
+from lib.comm_logger import CommLogger
 
 
 # Konstanta transport ASTM
@@ -64,6 +65,7 @@ class BroadcastWorker:
         self._lock = socket_lock
         self._logger = get_logger("tcp_socket", instrument_config.id)
         self._inst_name = instrument_config.name
+        self._comm = CommLogger.for_instrument(instrument_config.id)
 
         self._state = BroadcastState.IDLE
         self._running = False
@@ -258,6 +260,7 @@ class BroadcastWorker:
         """
         try:
             # 1. Kirim ENQ
+            self._comm.tx(bytes([ASTM_ENQ]))
             self._writer.write(bytes([ASTM_ENQ]))
             await self._writer.drain()
             self._logger.info(f"[{self._inst_name}] ENQ sent")
@@ -274,6 +277,7 @@ class BroadcastWorker:
             # 3. Kirim frame satu per satu
             self._set_state(BroadcastState.SEND)
             for i, frame in enumerate(frames):
+                self._comm.tx(frame)
                 self._writer.write(frame)
                 await self._writer.drain()
                 self._logger.info(
@@ -292,6 +296,7 @@ class BroadcastWorker:
                 self._set_state(BroadcastState.SEND)
 
             # 4. Kirim EOT
+            self._comm.tx(bytes([ASTM_EOT]))
             self._writer.write(bytes([ASTM_EOT]))
             await self._writer.drain()
             self._logger.info(f"[{self._inst_name}] EOT sent, sesi selesai")
@@ -313,6 +318,7 @@ class BroadcastWorker:
         2. Tunggu ACK message (parse MSA segment)
         """
         try:
+            self._comm.tx(message)
             self._writer.write(message)
             await self._writer.drain()
             self._logger.info(
@@ -347,6 +353,7 @@ class BroadcastWorker:
             )
             if not data:
                 return "TIMEOUT"
+            self._comm.rx(data)
 
             return self._protocol.handle_ack(data)
 
@@ -371,6 +378,7 @@ class BroadcastWorker:
             )
             if not data:
                 return "TIMEOUT"
+            self._comm.rx(data)
 
             return self._protocol.handle_ack(data)
 

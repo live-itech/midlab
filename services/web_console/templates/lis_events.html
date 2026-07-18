@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}LIS Events — MidLab{% endblock %}
+{% block content %}
+<div class="card mb-4">
+  <div class="card-header">
+    <h2>LIS Event Queue</h2>
+    <p class="text-xs text-muted">Monitor antrian event ke EazyApp LIS (status + log)</p>
+  </div>
+  <div class="card-body">
+    <div class="d-flex gap-3 items-end mb-3" style="flex-wrap:wrap">
+      <div class="form-group" style="min-width:140px">
+        <label class="form-label">Instrument</label>
+        <input type="number" class="form-input" id="filter-instrument" placeholder="(all)">
+      </div>
+      <div class="form-group" style="min-width:140px">
+        <label class="form-label">Status</label>
+        <select class="form-select" id="filter-status">
+          <option value="">(all)</option>
+          <option>pending</option>
+          <option>sent</option>
+          <option>failed</option>
+          <option>skipped</option>
+        </select>
+      </div>
+      <div class="form-group" style="min-width:140px">
+        <label class="form-label">Type</label>
+        <select class="form-select" id="filter-type">
+          <option value="">(all)</option>
+          <option>status</option>
+          <option>log</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" id="btn-refresh">Refresh</button>
+    </div>
+
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ID</th><th>Time</th><th>Inst</th><th>Type</th>
+          <th>Payload</th><th>Status</th><th>Retry</th><th>Error</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="events-tbody">
+        <tr><td colspan="9" class="text-center text-muted" style="padding:24px">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  function makeCell(text, className) {
+    const td = document.createElement('td');
+    if (className) td.className = className;
+    td.textContent = text == null ? '' : String(text);
+    return td;
+  }
+
+  function makeBtn(label, cls, onclick) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.className = cls;
+    btn.addEventListener('click', onclick);
+    return btn;
+  }
+
+  function buildRow(r) {
+    const tr = document.createElement('tr');
+    tr.appendChild(makeCell(r.id));
+    tr.appendChild(makeCell(r.created_at || ''));
+    tr.appendChild(makeCell(r.instrument_id));
+    tr.appendChild(makeCell(r.event_type));
+
+    const payloadCell = document.createElement('td');
+    const code = document.createElement('code');
+    code.className = 'font-mono';
+    code.textContent = JSON.stringify(r.payload_json).slice(0, 80);
+    payloadCell.appendChild(code);
+    tr.appendChild(payloadCell);
+
+    const statusCell = document.createElement('td');
+    const badgeClass = {
+      pending: 'badge-blue',
+      sent: 'badge-green',
+      failed: 'badge-red',
+      skipped: 'badge-yellow',
+    }[r.send_status] || '';
+    const span = document.createElement('span');
+    span.className = 'badge ' + badgeClass;
+    span.textContent = r.send_status;
+    statusCell.appendChild(span);
+    tr.appendChild(statusCell);
+
+    tr.appendChild(makeCell(r.retry_count));
+    tr.appendChild(makeCell(r.error_message || ''));
+
+    const actions = document.createElement('td');
+    actions.className = 'd-flex gap-2';
+    if (r.send_status !== 'sent') {
+      actions.appendChild(makeBtn('Retry', 'btn btn-ghost btn-xs', () => retryEvent(r.id)));
+    }
+    if (r.send_status === 'pending' || r.send_status === 'failed') {
+      actions.appendChild(makeBtn('Skip', 'btn btn-ghost btn-xs', () => skipEvent(r.id)));
+    }
+    tr.appendChild(actions);
+    return tr;
+  }
+
+  async function loadEvents() {
+    const params = new URLSearchParams();
+    const inst = document.getElementById('filter-instrument').value;
+    const status = document.getElementById('filter-status').value;
+    const type = document.getElementById('filter-type').value;
+    if (inst) params.set('instrument_id', inst);
+    if (status) params.set('status', status);
+    if (type) params.set('event_type', type);
+
+    try {
+      const rows = await App.api('/api/lis-events?' + params.toString());
+      const tbody = document.getElementById('events-tbody');
+      tbody.replaceChildren();
+
+      if (!rows.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 9;
+        td.className = 'text-center text-muted';
+        td.style.padding = '24px';
+        td.textContent = 'No events';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        return;
+      }
+      rows.forEach(r => tbody.appendChild(buildRow(r)));
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  }
+
+  async function retryEvent(id) {
+    try {
+      await App.api(`/api/lis-events/${id}/retry`, { method: 'POST' });
+      App.toast('Event re-queued', 'success');
+      loadEvents();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  }
+
+  async function skipEvent(id) {
+    try {
+      await App.api(`/api/lis-events/${id}/skip`, { method: 'POST' });
+      App.toast('Event skipped', 'success');
+      loadEvents();
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  }
+
+  document.getElementById('btn-refresh').addEventListener('click', loadEvents);
+  loadEvents();
+  setInterval(loadEvents, 10000);
+})();
+</script>
+{% endblock %}

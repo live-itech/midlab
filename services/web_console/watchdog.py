@@ -76,6 +76,15 @@ class ServiceWatchdog:
     # Service Commands
     # ============================================================
 
+    @staticmethod
+    def _is_virtual_service(service_name: str) -> bool:
+        """
+        Virtual service = entry yang muncul di list_services tapi bukan proses
+        nyata (mis. tcp_<id>__comm → pointer ke file .comm.log).
+        Tidak boleh distart/stop/restart oleh watchdog.
+        """
+        return "__comm" in service_name
+
     def start_service(self, service_name: str, instrument_id: int = None) -> dict:
         """
         Start sebuah service sebagai subprocess.
@@ -87,6 +96,13 @@ class ServiceWatchdog:
         Returns:
             Dict {success, pid, message}
         """
+        if self._is_virtual_service(service_name):
+            return {
+                "success": False,
+                "pid": None,
+                "message": f"{service_name} adalah virtual service (log-only), tidak bisa di-start",
+            }
+
         # Cek apakah sudah running
         if self._is_process_alive(service_name):
             info = self._services.get(service_name, {})
@@ -152,6 +168,12 @@ class ServiceWatchdog:
         Returns:
             Dict {success, message}
         """
+        if self._is_virtual_service(service_name):
+            return {
+                "success": False,
+                "message": f"{service_name} adalah virtual service, tidak bisa di-stop",
+            }
+
         info = self._services.get(service_name)
 
         if not info or not self._is_process_alive(service_name):
@@ -203,6 +225,12 @@ class ServiceWatchdog:
 
     def restart_service(self, service_name: str) -> dict:
         """Stop lalu start ulang service."""
+        if self._is_virtual_service(service_name):
+            return {
+                "success": False,
+                "message": f"{service_name} adalah virtual service, tidak bisa di-restart",
+            }
+
         info = self._services.get(service_name, {})
         instrument_id = info.get("instrument_id")
 
@@ -227,6 +255,13 @@ class ServiceWatchdog:
 
     def set_auto_restart(self, service_name: str, enabled: bool) -> dict:
         """Toggle auto-restart untuk service."""
+        if self._is_virtual_service(service_name):
+            return {
+                "success": False,
+                "auto_restart": False,
+                "message": f"{service_name} adalah virtual service, tidak punya auto-restart",
+            }
+
         if service_name not in self._services:
             self._services[service_name] = {
                 "process": None,
@@ -357,6 +392,18 @@ class ServiceWatchdog:
         if service_name == "order_receiver":
             return [PYTHON, "-m", "services.order_receiver.main"]
 
+        if service_name.startswith("lis_bridge_"):
+            iid = instrument_id
+            if iid is None:
+                try:
+                    iid = int(service_name.split("_", 2)[2])
+                except (IndexError, ValueError):
+                    return None
+            return [
+                PYTHON, "-m", "services.lis_bridge.main",
+                "--instrument-id", str(iid),
+            ]
+
         if service_name.startswith("tcp_"):
             # tcp_<instrument_id>
             iid = instrument_id
@@ -407,8 +454,25 @@ class ServiceWatchdog:
             return False
 
     def _cleanup_service(self, service_name: str):
-        """Bersihkan state service setelah stop."""
-        info = self._services.get(service_name, {})
+        """
+        Bersihkan state service setelah stop.
+
+        Penting: kalau service_name tidak ada di _services, JANGAN bikin entry
+        baru. Bug lama: virtual service (mis. tcp_<id>__comm) atau nama asing
+        akan ter-resolve ke entry baru lewat fungsi ini, lalu muncul dobel di
+        list_services (sekali dari watchdog status, sekali dari virtual loop).
+        """
+        # Hapus PID file (selalu, terlepas dari entry registry)
+        pid_path = os.path.join(RUN_DIR, f"{service_name}.pid")
+        try:
+            os.remove(pid_path)
+        except FileNotFoundError:
+            pass
+
+        info = self._services.get(service_name)
+        if info is None:
+            # Service tidak terdaftar — no-op, jangan bikin entry baru.
+            return
 
         # Tutup log file handle
         log_file = info.get("log_file")
@@ -418,22 +482,13 @@ class ServiceWatchdog:
             except Exception:
                 pass
 
-        # Hapus PID file
-        pid_path = os.path.join(RUN_DIR, f"{service_name}.pid")
-        try:
-            os.remove(pid_path)
-        except FileNotFoundError:
-            pass
-
         # Reset info tapi pertahankan auto_restart dan instrument_id
-        auto_restart = info.get("auto_restart", False)
-        instrument_id = info.get("instrument_id")
         self._services[service_name] = {
             "process": None,
             "pid": None,
             "start_time": None,
-            "auto_restart": auto_restart,
-            "instrument_id": instrument_id,
+            "auto_restart": info.get("auto_restart", False),
+            "instrument_id": info.get("instrument_id"),
             "log_file": None,
         }
 
@@ -475,7 +530,12 @@ class ServiceWatchdog:
         try:
             with open(STATE_FILE, "r") as f:
                 state = json.load(f)
+            purged = 0
             for name, data in state.items():
+                # Self-heal: skip entry virtual (orphan dari bug lama).
+                if self._is_virtual_service(name):
+                    purged += 1
+                    continue
                 self._services[name] = {
                     "process": None,
                     "pid": None,
@@ -485,8 +545,12 @@ class ServiceWatchdog:
                     "log_file": None,
                 }
             self._logger.info(
-                f"Loaded watchdog state: {len(state)} services"
+                f"Loaded watchdog state: {len(self._services)} services"
+                + (f" (purged {purged} virtual orphan)" if purged else "")
             )
+            if purged:
+                # Tulis ulang state file tanpa entri virtual.
+                self._save_state()
         except FileNotFoundError:
             pass
         except Exception as e:

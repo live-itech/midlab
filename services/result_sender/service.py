@@ -22,7 +22,7 @@ import sys
 import aiohttp
 
 from lib.config import Config
-from lib.db import get_pending_results, get_setting, update_result_status
+from lib.db import get_instrument_by_id, get_pending_results, get_setting, update_result_status
 from lib.utils import get_logger
 
 
@@ -194,6 +194,15 @@ class ResultSenderService:
         for result in results:
             if not self._running:
                 break
+
+            # Skip jika alat sudah pakai LisBridgeService
+            inst = get_instrument_by_id(result.instrument_id)
+            if inst and inst.lis_bridge_enabled:
+                self._logger.debug(
+                    f"result_id={result.id} skip (lis_bridge_enabled "
+                    f"untuk instrument_id={result.instrument_id})"
+                )
+                continue
 
             # Skip jika sudah melebihi retry_max
             retry_count = result.retry_count or 0

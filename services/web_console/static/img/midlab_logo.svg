@@ -1,0 +1,77 @@
+<svg width="100%" viewBox="0 0 680 420" role="img" xmlns="http://www.w3.org/2000/svg" style="">
+  <title style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">MidLab Logo</title>
+  <desc style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">Logo aplikasi MidLab - middleware laboratorium klinik</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+
+  <!-- Background area, transparent -->
+
+  <!-- ===== ICON MARK ===== -->
+  <!-- Outer hexagon ring -->
+  <g transform="translate(340, 190)" style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">
+    <!-- Hexagon shape for the icon -->
+    <polygon points="0,-72 62,-36 62,36 0,72 -62,36 -62,-36" fill="#1A3A5C" stroke="none" style="fill:rgb(26, 58, 92);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+    <!-- Inner hexagon cut-out lighter -->
+    <polygon points="0,-52 45,-26 45,26 0,52 -45,26 -45,-26" fill="#0E6BA8" stroke="none" style="fill:rgb(14, 107, 168);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+    <!-- Signal / wave arcs - representing connectivity -->
+    <!-- Left arc -->
+    <path d="M -30,-6 Q -46,0 -30,12" fill="none" stroke="#7EC8E3" stroke-width="3" stroke-linecap="round" style="fill:none;stroke:rgb(126, 200, 227);color:rgb(255, 255, 255);stroke-width:3px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+    <path d="M -38,-14 Q -60,0 -38,18" fill="none" stroke="#7EC8E3" stroke-width="2" stroke-linecap="round" opacity="0.6" style="fill:none;stroke:rgb(126, 200, 227);color:rgb(255, 255, 255);stroke-width:2px;stroke-linecap:round;stroke-linejoin:miter;opacity:0.6;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+    <!-- Right arc -->
+    <path d="M 30,-6 Q 46,0 30,12" fill="none" stroke="#7EC8E3" stroke-width="3" stroke-linecap="round" style="fill:none;stroke:rgb(126, 200, 227);color:rgb(255, 255, 255);stroke-width:3px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+    <path d="M 38,-14 Q 60,0 38,18" fill="none" stroke="#7EC8E3" stroke-width="2" stroke-linecap="round" opacity="0.6" style="fill:none;stroke:rgb(126, 200, 227);color:rgb(255, 255, 255);stroke-width:2px;stroke-linecap:round;stroke-linejoin:miter;opacity:0.6;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+    <!-- Center circuit / bridge element -->
+    <!-- Horizontal connector line -->
+    <line x1="-22" y1="0" x2="22" y2="0" stroke="#E8F4FD" stroke-width="2.5" style="fill:rgb(0, 0, 0);stroke:rgb(232, 244, 253);color:rgb(255, 255, 255);stroke-width:2.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+    <!-- Left node -->
+    <circle cx="-22" cy="0" r="5" fill="#4DB8E8" stroke="#E8F4FD" stroke-width="1.5" style="fill:rgb(77, 184, 232);stroke:rgb(232, 244, 253);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+    <!-- Center node -->
+    <circle cx="0" cy="0" r="7" fill="#FF6B35" stroke="#E8F4FD" stroke-width="2" style="fill:rgb(255, 107, 53);stroke:rgb(232, 244, 253);color:rgb(255, 255, 255);stroke-width:2px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+    <!-- Right node -->
+    <circle cx="22" cy="0" r="5" fill="#4DB8E8" stroke="#E8F4FD" stroke-width="1.5" style="fill:rgb(77, 184, 232);stroke:rgb(232, 244, 253);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+    <!-- Vertical tick on center node - cross symbol -->
+    <line x1="0" y1="-4" x2="0" y2="4" stroke="#E8F4FD" stroke-width="2" stroke-linecap="round" style="fill:rgb(0, 0, 0);stroke:rgb(232, 244, 253);color:rgb(255, 255, 255);stroke-width:2px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+    <!-- Top small accent -->
+    <circle cx="0" cy="-28" r="3" fill="#4DB8E8" opacity="0.7" style="fill:rgb(77, 184, 232);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.7;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+    <line x1="0" y1="-25" x2="0" y2="-8" stroke="#4DB8E8" stroke-width="1.5" stroke-dasharray="3 2" opacity="0.7" style="fill:rgb(0, 0, 0);stroke:rgb(77, 184, 232);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-dasharray:3px, 2px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.7;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+    <!-- Bottom small accent -->
+    <circle cx="0" cy="28" r="3" fill="#4DB8E8" opacity="0.7" style="fill:rgb(77, 184, 232);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.7;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+    <line x1="0" y1="25" x2="0" y2="8" stroke="#4DB8E8" stroke-width="1.5" stroke-dasharray="3 2" opacity="0.7" style="fill:rgb(0, 0, 0);stroke:rgb(77, 184, 232);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-dasharray:3px, 2px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.7;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  </g>
+
+  <!-- ===== WORDMARK ===== -->
+  <!-- "Mid" in bold dark blue -->
+  <text x="340" y="298" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="42" font-weight="700" letter-spacing="-1" fill="#1A3A5C" style="fill:rgb(26, 58, 92);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Segoe UI&quot;, Arial, sans-serif;font-size:42px;font-weight:700;text-anchor:middle;dominant-baseline:auto">
+    Mid<tspan fill="#0E6BA8" style="fill:rgb(14, 107, 168);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Segoe UI&quot;, Arial, sans-serif;font-size:42px;font-weight:700;text-anchor:middle;dominant-baseline:auto">Lab</tspan>
+  </text>
+
+  <!-- Tagline -->
+  <text x="340" y="324" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="13" font-weight="400" letter-spacing="2" fill="#5A7A9A" style="fill:rgb(90, 122, 154);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Segoe UI&quot;, Arial, sans-serif;font-size:13px;font-weight:400;text-anchor:middle;dominant-baseline:auto">
+    LABORATORY MIDDLEWARE
+  </text>
+
+  <!-- Small divider line under tagline -->
+  <line x1="280" y1="334" x2="400" y2="334" stroke="#0E6BA8" stroke-width="1" opacity="0.4" style="fill:rgb(0, 0, 0);stroke:rgb(14, 107, 168);color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.4;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- medz-easy.com attribution -->
+  <text x="340" y="354" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="11" font-weight="400" fill="#8AAABB" letter-spacing="0.5" style="fill:rgb(138, 170, 187);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Segoe UI&quot;, Arial, sans-serif;font-size:11px;font-weight:400;text-anchor:middle;dominant-baseline:auto">
+    by medz-easy.com
+  </text>
+
+  <!-- ===== VARIANTS LABEL ===== -->
+  <!-- Horizontal rule separator -->
+  <line x1="100" y1="378" x2="580" y2="378" stroke="#E0E8F0" stroke-width="0.5" style="fill:rgb(0, 0, 0);stroke:rgb(224, 232, 240);color:rgb(255, 255, 255);stroke-width:0.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="340" y="400" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="10" fill="#B0C4D0" letter-spacing="1" style="fill:rgb(176, 196, 208);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Segoe UI&quot;, Arial, sans-serif;font-size:10px;font-weight:400;text-anchor:middle;dominant-baseline:auto">
+    ASTM · HL7 · BCI · POCT
+  </text>
+</svg>

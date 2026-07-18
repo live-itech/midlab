@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %}Protocols{% endblock %}
+{% block topbar_title %}Protocol Modules{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Protocols</h1>
+  <p>Daftar modul protokol yang ter-discover dan alat yang memakainya. Hot-swap protocol akan otomatis restart service TCP alat tersebut.</p>
+</div>
+
+<div class="card">
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Protocol</th>
+            <th>Module Path</th>
+            <th>Jumlah Alat</th>
+            <th>Alat Pengguna (klik dropdown untuk swap)</th>
+          </tr>
+        </thead>
+        <tbody id="protocols-tbody">
+          <tr><td colspan="4" class="text-center text-muted" style="padding:24px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  let protocolList = [];
+
+  async function load() {
+    try {
+      const [protocols, instruments] = await Promise.all([
+        App.api('/api/protocols'),
+        App.api('/api/instruments'),
+      ]);
+      protocolList = protocols || [];
+      render(protocolList, instruments || []);
+    } catch (err) {
+      console.error('Gagal load protocols:', err);
+      document.getElementById('protocols-tbody').innerHTML =
+        `<tr><td colspan="4" class="text-center text-muted" style="padding:24px">Gagal memuat: ${App.escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  function protoOptions(current) {
+    return protocolList.map(p => {
+      const sel = p.name.toUpperCase() === (current || '').toUpperCase() ? 'selected' : '';
+      return `<option value="${App.escapeHtml(p.name)}" ${sel}>${App.escapeHtml(p.name)}</option>`;
+    }).join('');
+  }
+
+  function render(protocols, instruments) {
+    const tbody = document.getElementById('protocols-tbody');
+    if (protocols.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted" style="padding:24px">Tidak ada protokol ter-registrasi</td></tr>';
+      return;
+    }
+
+    const byProto = {};
+    instruments.forEach(i => {
+      const key = (i.protocol || '').toUpperCase();
+      if (!byProto[key]) byProto[key] = [];
+      byProto[key].push(i);
+    });
+
+    tbody.innerHTML = protocols.map(p => {
+      const users = byProto[p.name.toUpperCase()] || [];
+      const userList = users.length === 0
+        ? '<span class="text-muted">—</span>'
+        : users.map(i => {
+            const dot = i.is_active
+              ? '<span class="badge badge-green"><span class="badge-dot"></span>aktif</span>'
+              : '<span class="badge badge-gray"><span class="badge-dot"></span>nonaktif</span>';
+            return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+              <span class="font-bold">${App.escapeHtml(i.name)}</span>
+              <span class="text-muted">${App.escapeHtml(i.ip_address)}:${i.port} · ${App.escapeHtml(i.mode)}</span>
+              ${dot}
+              <select class="form-select" style="max-width:140px;padding:2px 6px;font-size:12px"
+                      data-iid="${i.id}" data-current="${App.escapeHtml(i.protocol)}"
+                      onchange="swapProtocol(this)">
+                ${protoOptions(i.protocol)}
+              </select>
+            </div>`;
+          }).join('');
+      return `<tr>
+        <td class="font-bold">${App.escapeHtml(p.name)}</td>
+        <td class="font-mono">${App.escapeHtml(p.module_path)}</td>
+        <td>${users.length}</td>
+        <td>${userList}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  window.swapProtocol = async function(sel) {
+    const iid = sel.getAttribute('data-iid');
+    const current = sel.getAttribute('data-current');
+    const next = sel.value;
+    if (next === current) return;
+
+    const ok = await App.confirm(
+      'Hot-Swap Protocol',
+      `Ganti protocol alat dari ${current} → ${next}? Service tcp_${iid} akan di-restart.`
+    );
+    if (!ok) {
+      sel.value = current;
+      return;
+    }
+
+    try {
+      const res = await App.api(`/api/instruments/${iid}/protocol`, {
+        method: 'POST',
+        body: { protocol: next },
+      });
+      App.toast(res.message || 'Protocol di-update', 'success');
+      load();
+    } catch (err) {
+      App.toast(err.message, 'error');
+      sel.value = current;
+    }
+  };
+
+  load();
+  App.startAutoRefresh(load, 15000);
+})();
+</script>
+{% endblock %}
