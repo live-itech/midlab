@@ -1,14 +1,15 @@
 [Unit]
 Description=MidLab LisBridgeService (instrument %i)
-After=network.target mysqld.service
-Wants=mysqld.service
+After=network.target mysql.service
+Wants=mysql.service
 
 [Service]
 Type=simple
 User=midlab
 Group=midlab
 WorkingDirectory=/opt/midlab
-ExecStart=/usr/bin/python3 -m services.lis_bridge.main --instrument-id %i
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/midlab/.venv/bin/python -m services.lis_bridge.main --instrument-id %i
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/midlab/lis_bridge_%i.log

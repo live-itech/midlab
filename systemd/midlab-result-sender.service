@@ -9,7 +9,7 @@ User=midlab
 Group=midlab
 WorkingDirectory=/opt/midlab
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 services/result_sender/main.py
+ExecStart=/opt/midlab/.venv/bin/python services/result_sender/main.py
 Restart=always
 RestartSec=5
 StandardOutput=journal

@@ -9,7 +9,7 @@ User=midlab
 Group=midlab
 WorkingDirectory=/opt/midlab
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 services/tcp_socket/main.py --instrument-id %i
+ExecStart=/opt/midlab/.venv/bin/python services/tcp_socket/main.py --instrument-id %i
 Restart=always
 RestartSec=5
 StandardOutput=journal

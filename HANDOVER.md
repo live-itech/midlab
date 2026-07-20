@@ -31,7 +31,7 @@ meneruskan ke LIS via REST API, serta menerima order dari LIS dan mengirim ke al
 | `services/result_sender/` | Selesai | Poll DB → POST ke LIS |
 | `services/order_receiver/` | Selesai | REST API terima order dari LIS |
 | `services/web_console/` | Selesai | API + Watchdog + semua halaman UI |
-| Systemd unit files | Selesai | 4 unit files + install script |
+| Systemd unit files | Selesai | 5 unit files (web-console, tcp@, lis-bridge@, result-sender, order-receiver) + install script |
 | Dokumentasi | Selesai | STRUKTUR.md, PANDUAN-ALAT-BARU.md, HANDOVER.md |
 
 ### Apa yang Belum Ada / Perlu Dilanjutkan
@@ -317,7 +317,8 @@ python3 services/tcp_socket/main.py --instrument-id 1
 
 ## 11. Deployment Production Checklist
 
-Gunakan checklist ini sebelum go-live di environment production:
+Gunakan checklist ini sebelum go-live di environment production.
+Untuk langkah instalasi lengkap (deploy dari git → systemd), lihat **[INSTALL.md](INSTALL.md)**.
 
 ### Infrastructure
 
@@ -341,7 +342,7 @@ Gunakan checklist ini sebelum go-live di environment production:
 
 ### Services
 
-- [ ] Semua 4 systemd unit file sudah di-copy ke `/etc/systemd/system/`
+- [ ] Semua 5 systemd unit file sudah di-copy ke `/etc/systemd/system/` (via `install.sh`)
 - [ ] `systemctl daemon-reload` sudah dijalankan
 - [ ] `midlab-web-console`, `midlab-result-sender`, `midlab-order-receiver` sudah di-enable
 - [ ] Test jalan manual sebelum enable systemd: `python3 services/web_console/main.py`
