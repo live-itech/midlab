@@ -37,9 +37,9 @@ COUNTRY_CODE = "CHA"        # MSH-17 — nilai contoh dokumen
 LIS_SENDING_APP = "MidLab"
 LIS_SENDING_FACILITY = ""
 
-# Fallback MSH-5/MSH-6 ACK bila pesan alat tidak menyertakan MSH-3/MSH-4.
-DEFAULT_INSTRUMENT_APP = "Genrui"
-DEFAULT_INSTRUMENT_MODEL = "KT-6610"
+# MSH-5/MSH-6 ACK sengaja dibiarkan kosong — lihat builder.build_ack().
+# Sebelumnya diisi fallback "Genrui"/"KT-6610" hasil tebakan dari dokumen KT-6610;
+# AR580 di lapangan mengirim MSH-3..6 kosong dan menolak ACK yang mengisinya.
 
 
 # ============================================================
@@ -68,6 +68,9 @@ ACK_CR = "CR"   # Enhanced: Accept acknowledgment: Commit Reject
 ACK_CODES_POSITIF = frozenset({ACK_AA})
 ACK_CODES_NEGATIF = frozenset({ACK_AE, ACK_AR, ACK_CA, ACK_CE, ACK_CR})
 
+MSA_TEXT_ACCEPTED = "Message accepted"   # MSA-3
+STATUS_CODE_OK = "0"                     # MSA-6 — 0 = message success
+
 
 # ============================================================
 # Value type OBX-2
@@ -93,9 +96,23 @@ META_AGE = "Age"
 META_REMARKS = "Remarks"
 META_BLOOD_TYPE = "Blood Type"
 
+# Identifier di bawah TIDAK ada di contoh pesan manual (34 OBX), tapi dikirim
+# AR580 di lapangan (42 OBX). Tanpa didaftarkan di sini semuanya masuk
+# results[] sebagai seolah-olah hasil pemeriksaan — LIS menerima baris
+# "Print_BMP = C" sebagai hasil lab, dan yang kosong ditolak validasi.
+META_TAKE_MODE = "Take Mode"         # cara sampel diambil
+META_LOW_MODE = "Low Mode"           # mode pengukuran rendah
+META_RECHECK_FLAG = "Recheck flag"   # penanda sampel perlu diperiksa ulang
+META_WBC_ALARM = "WBC Alarm"         # alarm morfologi — mis. "Microcytosis"
+META_RBC_ALARM = "RBC Alarm"
+META_PLT_ALARM = "PLT Alarm"
+META_PRINT_BMP = "Print_BMP"         # penanda cetak internal alat
+
 METADATA_IDENTIFIERS = frozenset({
     META_BLOOD_MODE, META_TEST_MODE, META_REF_GROUP,
     META_AGE, META_REMARKS, META_BLOOD_TYPE,
+    META_TAKE_MODE, META_LOW_MODE, META_RECHECK_FLAG,
+    META_WBC_ALARM, META_RBC_ALARM, META_PLT_ALARM, META_PRINT_BMP,
 })
 
 

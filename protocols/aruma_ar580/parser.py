@@ -254,6 +254,13 @@ def _parse_obx(segment: str, result: ResultObject) -> bool:
     if not identifier:
         raise ValueError("OBX tanpa observation identifier (OBX-3)")
 
+    # Entri tanpa nilai tidak dikirim. ESR adalah pengukuran sungguhan (karena
+    # itu ia tidak masuk METADATA_IDENTIFIERS) tapi kosong bila tidak
+    # diperiksa; hasil tanpa nilai tidak membawa informasi apa pun dan ditolak
+    # validasi LIS ("The results.N.value field is required").
+    if not value:
+        return False
+
     result.results.append(TestResult(
         test_code=identifier,
         test_name=identifier,

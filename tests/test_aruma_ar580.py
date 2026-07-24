@@ -401,12 +401,40 @@ def test_ack_hanya_berisi_msh_dan_msa(mod):
     assert segmen == [b"MSH", b"MSA"]
 
 
-def test_ack_mengarahkan_balik_ke_pengirim(mod):
-    # MSH-5/6 ACK = MSH-3/4 pesan alat.
-    ack = mod.build_ack_response(ORU_DOC, INSTRUMENT).decode()
-    msh = ack.split("\r")[0].split("|")
-    assert msh[4] == "Genrui"
-    assert msh[5] == "KT-6610"
+def test_ack_msa_lengkap_sampai_status_code(mod):
+    # Manual menuliskan MSA dengan trailing field sampai MSA-6 (MSA|AA|1275||||).
+    # MSA ringkas "MSA|AA|<id>" ditolak alat di lapangan: hasil dikirim ulang
+    # dengan control ID sama lalu koneksi di-reset.
+    ack = mod.build_ack_response(ORU_DOC, INSTRUMENT)
+    assert b"MSA|AA|1275|Message accepted|||0|\r" in ack
+
+
+def test_ack_tidak_menebak_identitas_alat(mod):
+    # MSH-4/5/6 kosong. Fallback "Genrui"/"KT-6610" dulu bocor ke MSH-5/6 saat
+    # alat mengirim MSH-3/4 kosong — nama vendor tebakan tidak boleh muncul.
+    msh = mod.build_ack_response(ORU_DOC, INSTRUMENT).decode().split("\r")[0]
+    f = msh.split("|")
+    assert f[2] == "MidLab"          # MSH-3
+    assert f[3] == ""                # MSH-4
+    assert f[4] == ""                # MSH-5
+    assert f[5] == ""                # MSH-6
+    assert b"Genrui" not in mod.build_ack_response(ORU_DOC, INSTRUMENT)
+    assert b"KT-6610" not in mod.build_ack_response(ORU_DOC, INSTRUMENT)
+
+
+def test_ack_msh_lengkap_sampai_msh21(mod):
+    # Timestamp wajib jatuh di MSH-7 dan MSH ditutup trailing "|||" (MSH-19..21),
+    # sama seperti MSH pesan alat.
+    msh = mod.build_ack_response(ORU_DOC, INSTRUMENT).decode().split("\r")[0]
+    f = msh.split("|")
+    assert len(f) == 21              # MSH..MSH-21 (MSH-1 = separator itu sendiri)
+    assert len(f[6]) == 14           # MSH-7 YYYYMMDDHHMMSS
+    assert f[8] == "ACK^R01"         # MSH-9
+    assert f[9] == "1275"            # MSH-10
+    assert f[16] == "CHA"            # MSH-17
+    assert f[17] == "UTF-8"          # MSH-18
+    assert f[18:] == ["", "", ""]    # MSH-19..21
+    assert msh.endswith("UTF-8|||")
 
 
 def test_ack_control_id_berbeda_ikut_berubah(mod):
