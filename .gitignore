@@ -15,6 +15,7 @@ config.yaml
 # Runtime
 run/*.pid
 *.pid
+run/watchdog_state.json
 
 # IDE
 .vscode/
@@ -26,3 +27,4 @@ Thumbs.db
 
 # Claude Code
 .claude/
+backups/
