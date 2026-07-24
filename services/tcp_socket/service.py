@@ -81,6 +81,11 @@ class TCPSocketService:
         self._writer: asyncio.StreamWriter | None = None
         self._server: asyncio.Server | None = None  # Mode server
 
+        # Penanda per-koneksi: diset _close_connection() saat MidLab yang
+        # menutup. Receive loop memegang referensi dict-nya sendiri, jadi
+        # koneksi lama tidak terpengaruh penanda koneksi baru.
+        self._konteks_koneksi: dict | None = None
+
         # State
         self._running = False
         self._connected = False
@@ -209,25 +214,48 @@ class TCPSocketService:
         peer = writer.get_extra_info("peername")
         self._logger.info(f"{self._tag} Koneksi masuk dari {peer}")
 
-        # Tutup koneksi lama jika ada
+        # Tutup koneksi lama beserta komponennya SEBELUM membangun yang baru.
+        # Urutan ini disengaja: kalau cleanup koneksi lama dibiarkan berjalan
+        # di task-nya sendiri, ia bisa menimpa komponen milik koneksi baru.
         await self._close_connection()
+        await self._stop_components()
 
+        konteks = {"ditutup_midlab": False}
         self._reader = reader
         self._writer = writer
+        self._konteks_koneksi = konteks
         self._connected = True
         self._emit_lis_status("online")
 
         # Spawn komponen dan jalankan receive loop
-        self._init_components()
+        receiver = self._init_components(reader, writer)
         await self._start_components()
 
         try:
-            await self._receive_loop()
+            await self._receive_loop(reader, writer, receiver, konteks)
         finally:
-            self._logger.info(f"{self._tag} Koneksi dari {peer} terputus")
-            self._connected = False
-            self._emit_lis_status("offline")
-            await self._stop_components()
+            await self._selesaikan_koneksi(peer, receiver)
+
+    async def _selesaikan_koneksi(self, peer, receiver: ResultReceiver):
+        """
+        Cleanup setelah receive loop satu koneksi selesai.
+
+        State bersama (self._connected, komponen) hanya dibersihkan bila
+        koneksi ini masih koneksi aktif. Alat ini membuka koneksi baru tiap
+        beberapa detik, jadi cleanup koneksi lama kerap berjalan setelah
+        koneksi penerus sudah siap — tanpa penjagaan ini, koneksi lama akan
+        mematikan receiver milik penerusnya dan hasil bisa hilang.
+        """
+        self._logger.info(f"{self._tag} Koneksi dari {peer} terputus")
+
+        if self._receiver is not receiver:
+            # Sudah digantikan koneksi lain — jangan sentuh state bersama.
+            receiver.reset_buffer()
+            return
+
+        self._connected = False
+        self._emit_lis_status("offline")
+        await self._stop_components()
 
     # ============================================================
     # Client Mode — konek ke IP:port alat
@@ -245,12 +273,15 @@ class TCPSocketService:
                     f"{self._config.ip_address}:{self._config.port}..."
                 )
 
-                self._reader, self._writer = await asyncio.wait_for(
+                reader, writer = await asyncio.wait_for(
                     asyncio.open_connection(
                         self._config.ip_address, self._config.port
                     ),
                     timeout=30,
                 )
+                konteks = {"ditutup_midlab": False}
+                self._reader, self._writer = reader, writer
+                self._konteks_koneksi = konteks
 
                 self._connected = True
                 self._logger.info(
@@ -260,11 +291,11 @@ class TCPSocketService:
                 self._emit_lis_status("online")
 
                 # Spawn komponen dan jalankan receive loop
-                self._init_components()
+                receiver = self._init_components(reader, writer)
                 await self._start_components()
 
                 try:
-                    await self._receive_loop()
+                    await self._receive_loop(reader, writer, receiver, konteks)
                 finally:
                     self._connected = False
                     self._emit_lis_status("offline")
@@ -300,25 +331,40 @@ class TCPSocketService:
     # Receive Loop — inti penerimaan data dari alat
     # ============================================================
 
-    async def _receive_loop(self):
+    async def _receive_loop(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        receiver: ResultReceiver,
+        konteks: dict,
+    ):
         """
         Loop utama baca data dari socket.
         Dispatch ke ResultReceiver, dan jika ada query trigger
         ke QueryHandler.
+
+        reader/writer/receiver/konteks diterima sebagai parameter, bukan dibaca
+        dari self._*: satu alat bisa punya koneksi lama dan baru hidup bersamaan
+        sesaat, dan loop koneksi lama tidak boleh ikut membaca socket koneksi
+        baru saat atribut instance ditimpa.
         """
         self._logger.info(f"{self._tag} Receive loop dimulai")
 
-        while self._running and self._connected:
+        while self._running:
+            # Dicek di awal iterasi, bukan hanya sebagai syarat while: penutupan
+            # oleh MidLab bisa terjadi sebelum read() sempat dipanggil lagi, dan
+            # kasus itu tetap harus tercatat sebabnya.
+            if konteks["ditutup_midlab"]:
+                self._log_penutupan(konteks, reset=False)
+                break
+
             try:
-                data = await self._reader.read(READ_BUFFER_SIZE)
+                data = await reader.read(READ_BUFFER_SIZE)
                 if data:
                     self._comm.rx(data)
 
                 if not data:
-                    # Koneksi ditutup oleh remote
-                    self._logger.info(
-                        f"{self._tag} Koneksi ditutup oleh remote"
-                    )
+                    self._log_penutupan(konteks, reset=False)
                     break
 
                 self._logger.info(
@@ -326,25 +372,21 @@ class TCPSocketService:
                 )
 
                 # Dispatch ke ResultReceiver
-                is_query = await self._receiver.handle_data(
-                    data, self._writer
-                )
+                is_query = await receiver.handle_data(data, writer)
 
                 # Jika ResultReceiver mendeteksi query trigger
                 if is_query and self._query_handler:
-                    query_data = self._receiver.last_query_data
+                    query_data = receiver.last_query_data
                     if query_data:
                         await self._query_handler.handle_query(query_data)
-                        self._receiver.clear_last_query()
+                        receiver.clear_last_query()
                     else:
                         # ASTM: data Q record ada dalam combined frames
                         # yang sudah di-handle oleh receiver
                         await self._query_handler.handle_query(data)
 
             except ConnectionResetError:
-                self._logger.warning(
-                    f"{self._tag} Connection reset by remote"
-                )
+                self._log_penutupan(konteks, reset=True)
                 break
             except asyncio.CancelledError:
                 break
@@ -356,11 +398,50 @@ class TCPSocketService:
 
         self._logger.info(f"{self._tag} Receive loop selesai")
 
+    def _log_penutupan(self, konteks: dict, reset: bool):
+        """
+        Catat sebab koneksi berakhir, dibedakan siapa yang memutus.
+
+        Dulu semua kasus dilaporkan "by remote", termasuk koneksi yang MidLab
+        sendiri tutup lewat _close_connection() saat alat membuka koneksi
+        baru. Akibatnya log penuh WARNING reset palsu yang menyamarkan reset
+        sungguhan dari alat.
+
+        Penanda diset _close_connection(), BUKAN dibaca dari
+        writer.is_closing(). is_closing() tidak bisa membedakan keduanya:
+        pada RST dari alat, asyncio menutup transport sisi kita juga sehingga
+        is_closing() ikut True. Diukur dengan socket lokal:
+
+            klien tutup baik-baik (FIN) -> writer.is_closing() = False
+            klien abort (RST)           -> writer.is_closing() = True
+
+        Dikunci oleh tests/test_tcp_connection_lifecycle.py::
+        test_rst_alat_tidak_tertukar_dengan_penutupan_midlab.
+        """
+        if konteks["ditutup_midlab"]:
+            sebab = "service berhenti" if not self._running \
+                else "digantikan koneksi baru"
+            self._logger.info(
+                f"{self._tag} Koneksi ditutup MidLab ({sebab})"
+            )
+        elif reset:
+            self._logger.warning(
+                f"{self._tag} Koneksi di-reset alat (RST)"
+            )
+        else:
+            self._logger.info(
+                f"{self._tag} Koneksi ditutup alat (FIN)"
+            )
+
     # ============================================================
     # Component Management
     # ============================================================
 
-    def _init_components(self):
+    def _init_components(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> ResultReceiver:
         """
         Inisialisasi komponen internal sesuai mode operasi.
 
@@ -368,17 +449,22 @@ class TCPSocketService:
         broadcast:         ResultReceiver + BroadcastWorker + Lock
         query:             ResultReceiver + QueryHandler
         broadcast+query:   ResultReceiver + BroadcastWorker + QueryHandler + Lock
+
+        Returns:
+            ResultReceiver milik koneksi ini. Pemanggil memegangnya sebagai
+            variabel lokal agar cleanup-nya bisa dibedakan dari koneksi lain.
         """
         # ResultReceiver selalu ada
-        self._receiver = ResultReceiver(
+        receiver = ResultReceiver(
             self._config, self._protocol, self._socket_lock
         )
+        self._receiver = receiver
 
         # BroadcastWorker jika mode broadcast
         if self._config.has_broadcast:
             self._broadcast_worker = BroadcastWorker(
                 self._config, self._protocol,
-                self._reader, self._writer, self._socket_lock
+                reader, writer, self._socket_lock
             )
             self._logger.info(
                 f"{self._tag} BroadcastWorker initialized "
@@ -389,7 +475,7 @@ class TCPSocketService:
         if self._config.has_query:
             self._query_handler = QueryHandler(
                 self._config, self._protocol,
-                self._reader, self._writer, self._socket_lock
+                reader, writer, self._socket_lock
             )
             self._logger.info(f"{self._tag} QueryHandler initialized")
 
@@ -397,6 +483,7 @@ class TCPSocketService:
         self._logger.info(
             f"{self._tag} Komponen initialized: {mode_desc}"
         )
+        return receiver
 
     async def _start_components(self):
         """Start komponen async (BroadcastWorker task)."""
@@ -416,7 +503,11 @@ class TCPSocketService:
             self._receiver = None
 
     async def _close_connection(self):
-        """Tutup koneksi TCP aktif."""
+        """Tutup koneksi TCP aktif dan tandai bahwa MidLab yang menutupnya."""
+        if self._konteks_koneksi is not None:
+            self._konteks_koneksi["ditutup_midlab"] = True
+            self._konteks_koneksi = None
+
         if self._writer:
             try:
                 self._writer.close()
