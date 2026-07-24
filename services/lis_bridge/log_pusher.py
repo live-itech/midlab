@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
+from lib import timeutil
 from lib.lis_client import LisApiClient, LisApiError
 from lib.utils import get_logger
 
@@ -68,7 +69,7 @@ class LogPusher:
                 await self._client.post_log({
                     "level": log.level.lower(),
                     "message": log.message,
-                    "logged_at": log.logged_at.isoformat() if log.logged_at else None,
+                    "logged_at": timeutil.isoformat(log.logged_at),
                     "context": {
                         "service": log.service,
                         "instrument_id": self._instrument.lis_instrument_id,

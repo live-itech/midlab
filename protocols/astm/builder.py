@@ -8,7 +8,7 @@ order data dari LIS ke alat.
 Alur: OrderObject → build records → wrap_frame() → bytes siap kirim
 """
 
-from datetime import datetime, timezone
+from lib import timeutil
 
 from lib.utils import get_logger
 from protocols.astm.constants import (
@@ -129,7 +129,9 @@ class ASTMBuilder:
 
     def _build_h_record(self, instrument: dict) -> str:
         """Build H (Header) record string."""
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        # Jam lokal lab: alat membandingkan H-record timestamp dengan jam
+        # internalnya sendiri, yang juga lokal. UTC di sini bikin meleset 7 jam.
+        timestamp = timeutil.stamp("%Y%m%d%H%M%S")
         sender = instrument.get("name", "MidLab")
         # H|\\^&|||sender||||||host|P|1|timestamp
         fields = [

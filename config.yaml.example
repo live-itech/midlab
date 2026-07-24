@@ -3,6 +3,12 @@
 #   sudo mkdir -p /etc/midlab
 #   sudo cp config.yaml.example /etc/midlab/config.yaml
 
+# Zona waktu lab. Dipakai untuk semua timestamp: kolom DATETIME di DB, ISO8601
+# yang dikirim ke LIS/browser, jam di file log, dan field waktu pesan ASTM/HL7
+# ke alat. Ubah ini kalau lab berada di WITA ("Asia/Makassar") atau WIT
+# ("Asia/Jayapura"). Kosong/tidak dikenal → fallback Asia/Jakarta.
+timezone: "Asia/Jakarta"
+
 database:
   host: "127.0.0.1"
   port: 3306

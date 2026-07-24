@@ -14,12 +14,12 @@ Konfigurasi dari config.yaml:
     port: 8080           # port uvicorn (dipakai di main.py)
 """
 
-from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from lib import timeutil
 from lib.config import Config
 from lib.db import DBManager, TblOrder, save_order
 from lib.utils import get_logger
@@ -163,7 +163,7 @@ async def create_order(
     # Set request_datetime jika kosong
     order_dict = body.model_dump()
     if not order_dict.get("request_datetime"):
-        order_dict["request_datetime"] = datetime.now(timezone.utc).isoformat()
+        order_dict["request_datetime"] = timeutil.isoformat()
 
     # Simpan ke database
     order_id = save_order(body.instrument_id, order_dict)
@@ -222,12 +222,8 @@ async def get_order_status(
             retry_count=order.retry_count or 0,
             failed_at_service=order.failed_at_service,
             error_message=order.error_message,
-            created_at=order.created_at.isoformat() if order.created_at else None,
-            sent_to_instrument_at=(
-                order.sent_to_instrument_at.isoformat()
-                if order.sent_to_instrument_at
-                else None
-            ),
+            created_at=timeutil.isoformat(order.created_at),
+            sent_to_instrument_at=timeutil.isoformat(order.sent_to_instrument_at),
             order_json=order.order_json,
         )
 

@@ -9,16 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
+from lib import timeutil
 from lib.lis_client import LisApiClient, LisApiError
 from lib.utils import get_logger
-
-
-# Offset zona waktu lab. Alat emit jam lokal tanpa offset; EazyApp (Laravel)
-# kontraknya pakai ISO8601 ber-offset (lihat Postman collection: +07:00).
-# Ubah di sini kalau lab pindah zona waktu.
-_LAB_TZ = timezone(timedelta(hours=7))
 
 # ASTM datetime: YYYYMMDD atau YYYYMMDDHHMMSS (12/14 digit juga ditoleransi).
 _ASTM_DT_RE = re.compile(r"^\d{8}(\d{4}|\d{6})?$")
@@ -47,6 +42,9 @@ def _to_iso8601(value) -> str:
     """
     ASTM datetime (YYYYMMDD[HHMM[SS]]) → ISO8601 ber-offset lab.
     Passthrough kalau sudah ISO / format lain / kosong (jangan dirusak).
+
+    Alat emit jam lokal tanpa offset; EazyApp (Laravel) kontraknya pakai
+    ISO8601 ber-offset (lihat Postman collection: +07:00).
     """
     if not value or not isinstance(value, str):
         return value or ""
@@ -57,8 +55,7 @@ def _to_iso8601(value) -> str:
     if fmt is None:
         return v
     try:
-        dt = datetime.strptime(v, fmt).replace(tzinfo=_LAB_TZ)
-        return dt.isoformat()
+        return timeutil.isoformat(datetime.strptime(v, fmt))
     except ValueError:
         return v
 
@@ -84,8 +81,10 @@ def build_mid_payload(result_row, instrument) -> dict:
     # message_datetime: ASTM→ISO; fallback ke received_at kalau kosong.
     iso_mdt = _to_iso8601(payload.get("message_datetime"))
     if not iso_mdt:
-        ts = result_row.received_at or datetime.now(timezone.utc)
-        iso_mdt = ts.isoformat()
+        # received_at naive dari DB = jam lokal; isoformat() menambah offset.
+        # Tetap fallback ke `sekarang` kalau received_at kosong — kontrak
+        # EazyApp mewajibkan message_datetime terisi.
+        iso_mdt = timeutil.isoformat(result_row.received_at) or timeutil.isoformat()
     payload["message_datetime"] = iso_mdt
 
     # protocol: map nama internal → wire protocol EazyApp.

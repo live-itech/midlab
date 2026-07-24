@@ -9,7 +9,6 @@ State machine: IDLE → CHECK_DB → SEND → WAIT_ACK → UPDATE → IDLE
 """
 
 import asyncio
-from datetime import datetime, timezone
 from enum import Enum
 
 from lib.db import get_pending_orders, update_order_status

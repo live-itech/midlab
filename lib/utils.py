@@ -13,9 +13,10 @@ import logging
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
+from lib import timeutil
 from lib.config import Config
 
 
@@ -70,7 +71,7 @@ def get_logger(
     """
     Buat logger dengan RotatingFileHandler untuk service tertentu.
 
-    Format log: [LEVEL] [SERVICE] [INSTRUMENT] pesan
+    Format log: YYYY-MM-DD HH:MM:SS.mmm [LEVEL] [SERVICE] [INSTRUMENT] pesan
     Output ke: /var/log/midlab/<service_name>.log
     (atau fallback ke /tmp/midlab jika /var/log/midlab tidak writable)
 
@@ -126,11 +127,21 @@ def get_logger(
         )
         handler = logging.StreamHandler(sys.stderr)
 
-    # Format: [LEVEL] [SERVICE] [INSTRUMENT] pesan
+    # Format: YYYY-MM-DD HH:MM:SS.mmm [LEVEL] [SERVICE] [INSTRUMENT] pesan
+    #
+    # Timestamp sengaja disamakan dengan comm_logger. Tanpa ini, log service
+    # tidak bisa dikorelasikan dengan lalu lintas byte di *.comm.log — jarak
+    # antar-event (mis. seberapa sering alat konek ulang) jadi tidak terbaca.
     instrument_tag = str(instrument_id) if instrument_id is not None else "-"
     formatter = logging.Formatter(
-        f"[%(levelname)s] [{service_name.upper()}] [{instrument_tag}] %(message)s"
+        f"%(asctime)s.%(msecs)03d [%(levelname)s] [{service_name.upper()}] "
+        f"[{instrument_tag}] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # Jam log = jam lokal lab, bukan TZ proses. Tanpa ini log ikut TZ=UTC bila
+    # systemd menjalankan service dengan environment bersih, dan jadi tidak
+    # cocok dengan timestamp di DB.
+    formatter.converter = timeutil.logging_converter
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
@@ -139,17 +150,20 @@ def get_logger(
 
 def format_datetime(dt: datetime = None) -> str:
     """
-    Format datetime ke ISO8601 string.
+    Format datetime ke ISO8601 string ber-offset waktu lokal lab.
+
+    Naive datetime dianggap sudah waktu lokal — itu kontrak penyimpanan kolom
+    DATETIME (lihat lib/timeutil.py).
 
     Args:
-        dt: Datetime object. Jika None, gunakan waktu sekarang (UTC).
+        dt: Datetime object. Jika None, gunakan waktu sekarang (lokal lab).
 
     Returns:
-        String ISO8601, misal "2026-04-16T10:30:00+00:00"
+        String ISO8601, misal "2026-07-22T09:30:00+07:00"
     """
     if dt is None:
-        dt = datetime.now(timezone.utc)
-    return dt.isoformat()
+        return timeutil.isoformat()
+    return timeutil.isoformat(dt)
 
 
 def safe_json_loads(text: str) -> dict | None:

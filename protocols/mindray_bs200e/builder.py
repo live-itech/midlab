@@ -321,9 +321,9 @@ class MindrayBuilder:
 
 
 def _now_timestamp() -> str:
-    """Waktu sistem sekarang dalam format `YYYYMMDDHHMMSS`."""
-    from datetime import datetime
-    return datetime.now().strftime("%Y%m%d%H%M%S")
+    """Waktu lokal lab sekarang dalam format `YYYYMMDDHHMMSS`."""
+    from lib import timeutil
+    return timeutil.stamp("%Y%m%d%H%M%S")
 
 
 # ============================================================

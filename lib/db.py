@@ -4,9 +4,16 @@ lib/db.py — Database Manager untuk MidLab
 Mendefinisikan semua tabel (tbl_instrument, tbl_result, tbl_order, tbl_service_log)
 menggunakan SQLAlchemy Core + ORM. Menyediakan connection pooling dan helper functions
 untuk operasi database yang sering digunakan oleh service-service MidLab.
+
+KONTRAK WAKTU: semua kolom DATETIME menyimpan naive jam dinding lokal lab
+(Asia/Jakarta), lewat `timeutil.now_naive()` — bukan UTC. Kolom DATETIME MySQL
+tidak menyimpan offset, jadi aware datetime akan kehilangan tzinfo diam-diam dan
+menyisakan jam UTC yang lalu ditampilkan console sebagai lokal (mundur 7 jam).
+Saat membaca kembali untuk API, lewatkan ke `timeutil.isoformat()` supaya offset
++07:00 ikut terkirim.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import (
     create_engine,
@@ -26,6 +33,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.pool import QueuePool
 
 from lib.config import Config
+from lib.timeutil import now_naive
 
 
 Base = declarative_base()
@@ -90,7 +98,7 @@ class TblResult(Base):
     retry_count = Column(Integer, default=0)
     sent_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
-    received_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    received_at = Column(DateTime, default=now_naive)
 
 
 class TblOrder(Base):
@@ -109,7 +117,7 @@ class TblOrder(Base):
     retry_count = Column(Integer, default=0)
     sent_to_instrument_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=now_naive)
 
 
 class TblServiceLog(Base):
@@ -124,7 +132,7 @@ class TblServiceLog(Base):
         default="INFO",
     )
     message = Column(Text, nullable=True)
-    logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    logged_at = Column(DateTime, default=now_naive)
 
 
 class TblSetting(Base):
@@ -141,8 +149,8 @@ class TblSetting(Base):
     value = Column(Text, nullable=True)
     updated_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=now_naive,
+        onupdate=now_naive,
     )
 
 
@@ -169,7 +177,7 @@ class TblLisEventQueue(Base):
     )
     retry_count   = Column(Integer, default=0)
     error_message = Column(Text, nullable=True)
-    created_at    = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at    = Column(DateTime, default=now_naive)
     sent_at       = Column(DateTime, nullable=True)
 
 
@@ -308,7 +316,7 @@ def update_result_status(
         if error_message is not None:
             result.error_message = error_message
         if status == "sent":
-            result.sent_at = datetime.now(timezone.utc)
+            result.sent_at = now_naive()
         if status == "failed":
             result.retry_count = (result.retry_count or 0) + 1
         elif increment_retry:
@@ -340,7 +348,7 @@ def update_order_status(
             return False
         order.instrument_status = status
         if status == "sent":
-            order.sent_to_instrument_at = datetime.now(timezone.utc)
+            order.sent_to_instrument_at = now_naive()
         if status == "failed":
             order.retry_count = (order.retry_count or 0) + 1
             order.failed_at_service = failed_at_service
@@ -499,7 +507,7 @@ def update_instrument_lis_sync(instrument_id: int, lis_instrument_id: str) -> bo
         if not row:
             return False
         row.lis_instrument_id = lis_instrument_id
-        row.last_lis_sync_at = datetime.now(timezone.utc)
+        row.last_lis_sync_at = now_naive()
         session.commit()
         return True
     except Exception:
@@ -696,7 +704,7 @@ def update_lis_event_status(
         if increment_retry:
             ev.retry_count = (ev.retry_count or 0) + 1
         if status == "sent":
-            ev.sent_at = datetime.now(timezone.utc)
+            ev.sent_at = now_naive()
         session.commit()
         return True
     except Exception:

@@ -1,5 +1,5 @@
 """Test ResultPusher: payload build, 2xx→sent, 422→failed, 5xx→retry semantics."""
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,7 +14,9 @@ def _row(**kw):
         "id": 1,
         "instrument_id": 7,
         "result_json": {"mid_version": "1.0", "results": []},
-        "received_at": datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc),
+        # Naive = jam dinding lokal lab, persis bentuk yang dibaca dari
+        # kolom DATETIME (lihat lib/timeutil.py).
+        "received_at": datetime(2026, 5, 13, 8, 0),
         "retry_count": 0,
     }
     defaults.update(kw)
@@ -37,7 +39,7 @@ def test_build_mid_payload_rewrites_instrument_id():
     assert payload["instrument_id"] == "INST-X"
     assert payload["mid_version"] == "1.0"
     assert payload["message_id"] == "MSG-7-1"
-    assert payload["message_datetime"].startswith("2026-05-13T08:00")
+    assert payload["message_datetime"] == "2026-05-13T08:00:00+07:00"
 
 
 async def test_2xx_marks_sent():

@@ -8,7 +8,7 @@ dari LIS ke alat, serta membangun ACK dan query response.
 Alur: OrderObject → build segments → join → wrap_mllp() → bytes siap kirim
 """
 
-from datetime import datetime, timezone
+from lib import timeutil
 
 from lib.utils import get_logger, generate_message_id
 from protocols.hl7.constants import (
@@ -81,7 +81,8 @@ class HL7Builder:
         if message_control_id is None:
             message_control_id = generate_message_id()[:20]
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        # MSH-7 tanpa offset = jam lokal menurut HL7. Kirim jam lab, bukan UTC.
+        timestamp = timeutil.stamp("%Y%m%d%H%M%S")
         instrument_name = instrument.get("name", "Instrument")
 
         # MSH-9: message type → components (type^trigger)

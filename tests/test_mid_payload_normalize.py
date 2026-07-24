@@ -7,7 +7,7 @@ kontrak EazyApp Instrument API:
 - buang pseudo-result kalibrasi/absorbansi
 - drop field `comments` (tidak ada di kontrak)
 """
-from datetime import datetime, timezone
+from datetime import datetime
 from unittest.mock import MagicMock
 
 from lib.db import TblResult
@@ -19,7 +19,9 @@ def _row(**kw):
         "id": 9,
         "instrument_id": 1,
         "result_json": {"mid_version": "1.0"},
-        "received_at": datetime(2026, 5, 13, 8, 0, tzinfo=timezone.utc),
+        # Naive = jam dinding lokal lab, persis bentuk yang dibaca dari
+        # kolom DATETIME (lihat lib/timeutil.py).
+        "received_at": datetime(2026, 5, 13, 8, 0),
         "retry_count": 0,
     }
     defaults.update(kw)
@@ -57,7 +59,7 @@ def test_already_iso_passthrough():
 def test_empty_datetime_falls_back_to_received_at():
     row = _row(result_json={"message_datetime": ""})
     p = build_mid_payload(row, _inst())
-    assert p["message_datetime"].startswith("2026-05-13T08:00")
+    assert p["message_datetime"] == "2026-05-13T08:00:00+07:00"
 
 
 def test_protocol_cobas_mapped_to_astm():

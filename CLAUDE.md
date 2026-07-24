@@ -160,7 +160,7 @@ broadcast+query:      ResultReceiver + BroadcastWorker + QueryHandler + shared L
 2. DB ops dalam `try/except`, update flag di `finally`
 3. MySQL connection pooling wajib
 4. Protocol module di-load dynamic via `importlib`
-5. Log format: `[LEVEL] [SERVICE] [INSTRUMENT] pesan`
+5. Log format: `YYYY-MM-DD HH:MM:SS.mmm [LEVEL] [SERVICE] [INSTRUMENT] pesan`
 6. `RotatingFileHandler` untuk semua log
 7. Komentar boleh Bahasa Indonesia
 8. UI/UX web console menggunakan apple styles

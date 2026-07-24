@@ -22,7 +22,7 @@ import asyncio
 import os
 import socket
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Query, Request
@@ -31,6 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from lib import timeutil
 from lib.config import Config
 from lib.db import (
     DBManager,
@@ -460,7 +461,7 @@ def _instrument_to_response(row: TblInstrument) -> InstrumentResponse:
         lis_instrument_id=row.lis_instrument_id,
         order_poll_interval=row.order_poll_interval or 10,
         lis_bridge_enabled=bool(row.lis_bridge_enabled),
-        last_lis_sync_at=row.last_lis_sync_at.isoformat() if row.last_lis_sync_at else None,
+        last_lis_sync_at=timeutil.isoformat(row.last_lis_sync_at),
         lis_status_pushed=row.lis_status_pushed,
     )
 
@@ -1137,6 +1138,27 @@ async def stream_logs(
 # [Result Monitor]
 # ============================================================
 
+def _parse_filter_date(raw: str, field: str, end_of_day: bool = False):
+    """
+    Parse filter tanggal dari query string → naive jam dinding lokal.
+
+    Dua hal yang ditangani di sini:
+    - Nilai aware ber-offset diturunkan ke jam lab dulu (lihat timeutil.naive_local),
+      supaya bisa dibandingkan dengan kolom DATETIME yang naive.
+    - Tanggal polos "2026-07-22" dari <input type="date"> jadi tengah malam.
+      Untuk batas atas itu berarti seluruh isi hari itu ikut terbuang, jadi
+      batas atas digeser ke 23:59:59.999999 hari yang sama.
+    """
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        raise HTTPException(400, f"{field} format invalid: {raw}")
+
+    if end_of_day and len(raw.strip()) == 10:
+        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return timeutil.naive_local(dt)
+
+
 @app.get("/api/results", response_model=list[ResultResponse])
 async def list_results(
     status: str = Query(default=None, description="Filter: pending, sent, failed"),
@@ -1159,17 +1181,14 @@ async def list_results(
         if instrument_id:
             q = q.filter(TblResult.instrument_id == instrument_id)
         if date_from:
-            try:
-                dt_from = datetime.fromisoformat(date_from)
-                q = q.filter(TblResult.received_at >= dt_from)
-            except ValueError:
-                raise HTTPException(400, f"date_from format invalid: {date_from}")
+            q = q.filter(
+                TblResult.received_at >= _parse_filter_date(date_from, "date_from")
+            )
         if date_to:
-            try:
-                dt_to = datetime.fromisoformat(date_to)
-                q = q.filter(TblResult.received_at <= dt_to)
-            except ValueError:
-                raise HTTPException(400, f"date_to format invalid: {date_to}")
+            q = q.filter(
+                TblResult.received_at
+                <= _parse_filter_date(date_to, "date_to", end_of_day=True)
+            )
 
         rows = (
             q.order_by(TblResult.received_at.desc())
@@ -1186,8 +1205,8 @@ async def list_results(
                 send_status=r.send_status,
                 retry_count=r.retry_count or 0,
                 error_message=r.error_message,
-                received_at=r.received_at.isoformat() if r.received_at else None,
-                sent_at=r.sent_at.isoformat() if r.sent_at else None,
+                received_at=timeutil.isoformat(r.received_at),
+                sent_at=timeutil.isoformat(r.sent_at),
                 result_json=r.result_json,
             )
             for r in rows
@@ -1249,17 +1268,14 @@ async def list_orders(
         if instrument_id:
             q = q.filter(TblOrder.instrument_id == instrument_id)
         if date_from:
-            try:
-                dt_from = datetime.fromisoformat(date_from)
-                q = q.filter(TblOrder.created_at >= dt_from)
-            except ValueError:
-                raise HTTPException(400, f"date_from format invalid: {date_from}")
+            q = q.filter(
+                TblOrder.created_at >= _parse_filter_date(date_from, "date_from")
+            )
         if date_to:
-            try:
-                dt_to = datetime.fromisoformat(date_to)
-                q = q.filter(TblOrder.created_at <= dt_to)
-            except ValueError:
-                raise HTTPException(400, f"date_to format invalid: {date_to}")
+            q = q.filter(
+                TblOrder.created_at
+                <= _parse_filter_date(date_to, "date_to", end_of_day=True)
+            )
 
         rows = (
             q.order_by(TblOrder.created_at.desc())
@@ -1276,12 +1292,8 @@ async def list_orders(
                 failed_at_service=o.failed_at_service,
                 retry_count=o.retry_count or 0,
                 error_message=o.error_message,
-                created_at=o.created_at.isoformat() if o.created_at else None,
-                sent_to_instrument_at=(
-                    o.sent_to_instrument_at.isoformat()
-                    if o.sent_to_instrument_at
-                    else None
-                ),
+                created_at=timeutil.isoformat(o.created_at),
+                sent_to_instrument_at=timeutil.isoformat(o.sent_to_instrument_at),
                 order_json=o.order_json,
             )
             for o in rows
@@ -1402,7 +1414,7 @@ async def dashboard(x_api_key: str = Header(None)):
                 "id": r.id,
                 "instrument_id": r.instrument_id,
                 "message": r.error_message or "Send failed",
-                "timestamp": r.received_at.isoformat() if r.received_at else None,
+                "timestamp": timeutil.isoformat(r.received_at),
             })
 
         # Alert: recent failed orders (max 10)
@@ -1420,7 +1432,7 @@ async def dashboard(x_api_key: str = Header(None)):
                 "instrument_id": o.instrument_id,
                 "message": o.error_message or "Send to instrument failed",
                 "failed_at": o.failed_at_service,
-                "timestamp": o.created_at.isoformat() if o.created_at else None,
+                "timestamp": timeutil.isoformat(o.created_at),
             })
 
         # Sort alerts by timestamp descending
@@ -1498,8 +1510,8 @@ async def list_lis_events(
                 event_type=r.event_type, payload_json=r.payload_json,
                 send_status=r.send_status, retry_count=r.retry_count or 0,
                 error_message=r.error_message,
-                created_at=r.created_at.isoformat() if r.created_at else None,
-                sent_at=r.sent_at.isoformat() if r.sent_at else None,
+                created_at=timeutil.isoformat(r.created_at),
+                sent_at=timeutil.isoformat(r.sent_at),
             )
             for r in rows
         ]

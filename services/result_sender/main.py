@@ -15,9 +15,15 @@ import os
 # Pastikan root project ada di sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from lib import timeutil
 from lib.config import Config
 from lib.utils import get_logger
 from services.result_sender.service import ResultSenderService
+
+# Zona waktu proses = zona lab, dipasang sebelum logger/DB dipakai.
+# Tanpa ini service yang dijalankan systemd dengan environment bersih
+# jatuh ke UTC dan seluruh timestamp meleset 7 jam.
+timeutil.install_process_timezone()
 
 
 async def run():

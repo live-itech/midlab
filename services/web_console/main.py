@@ -23,9 +23,15 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import uvicorn
 
+from lib import timeutil
 from lib.config import Config
 from lib.utils import get_logger
 from services.web_console.api import app
+
+# Zona waktu proses = zona lab, dipasang sebelum logger/DB dipakai.
+# Tanpa ini service yang dijalankan systemd dengan environment bersih
+# jatuh ke UTC dan seluruh timestamp meleset 7 jam.
+timeutil.install_process_timezone()
 
 
 def main():

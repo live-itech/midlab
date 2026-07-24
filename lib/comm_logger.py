@@ -10,6 +10,8 @@ import os
 from logging.handlers import RotatingFileHandler
 from typing import Dict
 
+from lib import timeutil
+
 LOG_DIR = "/var/log/midlab"
 ROTATE_BYTES = 50 * 1024 * 1024
 ROTATE_BACKUPS = 5
@@ -50,10 +52,14 @@ class CommLogger:
                     maxBytes=ROTATE_BYTES,
                     backupCount=ROTATE_BACKUPS,
                 )
-                handler.setFormatter(logging.Formatter(
+                formatter = logging.Formatter(
                     "%(asctime)s.%(msecs)03d [tcp_" + str(instrument_id) + "] %(message)s",
                     datefmt="%Y-%m-%d %H:%M:%S",
-                ))
+                )
+                # Samakan dengan get_logger: jam lokal lab, supaya lalu lintas
+                # byte di *.comm.log bisa dikorelasikan dengan log service.
+                formatter.converter = timeutil.logging_converter
+                handler.setFormatter(formatter)
                 self._logger.addHandler(handler)
             except Exception as exc:
                 logging.getLogger("web_console").warning(
