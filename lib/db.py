@@ -181,6 +181,49 @@ class TblLisEventQueue(Base):
     sent_at       = Column(DateTime, nullable=True)
 
 
+class TblTapSession(Base):
+    """
+    Metadata sesi tapping data (capture alat yang belum punya driver).
+
+    Hanya METADATA yang di sini. Aliran byte-nya ada di
+    /var/log/midlab/tap/<id>.jsonl — menaruh byte stream di kolom MySQL mengulang
+    jebakan truncation tbl_result.raw_data TEXT (batas 64KB), dan capture bisa
+    jauh lebih besar dari itu.
+
+    Penulis & pembaca: TapService.
+    """
+    __tablename__ = "tbl_tap_session"
+
+    id             = Column(Integer, primary_key=True, autoincrement=True)
+    name           = Column(String(255), nullable=False)
+    transport      = Column(
+        Enum("tcp_server", "tcp_client", "serial", name="tap_transport_enum"),
+        nullable=False,
+    )
+    # mis. "0.0.0.0:2600" | "10.0.0.5:9100" | "/dev/ttyUSB0@9600-8N1"
+    target         = Column(String(255), nullable=False)
+    protocol_basis = Column(
+        Enum("ASTM", "HL7", "RAW", "AUTO", name="tap_basis_enum"),
+        nullable=False,
+    )
+    # Hasil tebakan AUTO — hanya saran, tidak mengubah responder.
+    detected_protocol = Column(String(20), nullable=True)
+    response_mode  = Column(
+        Enum("uni", "bidi", name="tap_mode_enum"),
+        nullable=False, default="uni",
+    )
+    status         = Column(
+        Enum("running", "stopped", "error", name="tap_status_enum"),
+        nullable=False, default="running",
+    )
+    bytes_rx       = Column(Integer, nullable=False, default=0)
+    bytes_tx       = Column(Integer, nullable=False, default=0)
+    message_count  = Column(Integer, nullable=False, default=0)
+    error_message  = Column(Text, nullable=True)
+    started_at     = Column(DateTime, default=now_naive)
+    stopped_at     = Column(DateTime, nullable=True)
+
+
 # ============================================================
 # DBManager — engine, session, dan table management
 # ============================================================
