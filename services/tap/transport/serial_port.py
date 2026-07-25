@@ -7,11 +7,13 @@ Dipakai saat develop driver di laptop, sebelum alat dipindah ke topologi produks
 pyserial bersifat blocking, jadi read/write dibungkus asyncio.to_thread. Port
 dibuka dengan timeout pendek supaya read() cepat kembali dengan apa pun yang ada
 — b"" berarti "belum ada data", bukan "putus".
+
+`import serial` sengaja lazy (di dalam open()): tapping produksi selalu lewat TCP,
+jadi web console tidak boleh gagal start hanya karena pyserial belum terpasang di
+venv. pyserial baru dibutuhkan saat benar-benar membuka port serial.
 """
 
 import asyncio
-
-import serial
 
 from lib.utils import get_logger
 from services.tap.transport.base import BaseTransport
@@ -47,7 +49,7 @@ class SerialTransport(BaseTransport):
         self._stopbits = stopbits
         self._xonxoff = xonxoff
         self._rtscts = rtscts
-        self._ser: serial.Serial | None = None
+        self._ser = None
 
     @property
     def description(self) -> str:
@@ -57,6 +59,15 @@ class SerialTransport(BaseTransport):
         )
 
     async def open(self) -> None:
+        try:
+            import serial     # lazy: hanya perlu saat benar-benar buka port
+        except ModuleNotFoundError as e:
+            raise OSError(
+                "Transport serial butuh pyserial, tapi belum terpasang. "
+                "Pasang dengan: pip install pyserial (atau tambahkan ke "
+                "requirements.txt lalu re-deploy). Tapping via TCP tidak "
+                "membutuhkannya."
+            ) from e
         try:
             self._ser = await asyncio.to_thread(
                 serial.Serial,
