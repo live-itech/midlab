@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}Tapping Data{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Tapping Data</h1>
+  <button class="btn btn-primary" id="tap-new">Sesi Baru</button>
+</div>
+
+<div class="alert alert-warning" role="alert">
+  <strong>Perhatian:</strong> data yang di-tap <strong>tidak</strong> masuk
+  <code>tbl_result</code> dan <strong>tidak</strong> dikirim ke LIS. Sesi ini hanya
+  merekam. Jangan jalankan pada alat yang service TCP-nya sedang aktif.
+</div>
+
+<div class="card">
+  <table class="table" id="tap-list">
+    <thead>
+      <tr>
+        <th>Nama</th><th>Transport</th><th>Target</th><th>Basis</th>
+        <th>Status</th><th>RX</th><th>TX</th><th>Pesan</th><th></th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<div class="card" id="tap-live" hidden>
+  <div class="card-header">
+    <h2 id="tap-live-title">Sesi</h2>
+    <div>
+      <button class="btn" id="tap-stop">Stop</button>
+      <button class="btn" id="tap-export-bin">Download .bin</button>
+      <button class="btn" id="tap-export-py">Copy sebagai Python bytes</button>
+    </div>
+  </div>
+
+  <div class="alert alert-warning" id="tap-baud-hint" hidden>
+    Byte masuk tapi tidak membentuk frame valid — <strong>cek baud rate</strong>.
+  </div>
+
+  <div class="tap-toolbar">
+    <label><input type="checkbox" id="tap-show-rx" checked> RX</label>
+    <label><input type="checkbox" id="tap-show-tx" checked> TX</label>
+    <span id="tap-detected"></span>
+  </div>
+
+  <pre class="tap-stream" id="tap-stream"></pre>
+
+  <div class="tap-send">
+    <input type="text" id="tap-manual" placeholder="kirim manual (hex, mis. 05 06)">
+    <button class="btn" id="tap-send">Kirim</button>
+  </div>
+</div>
+
+<dialog id="tap-dialog">
+  <form method="dialog" id="tap-form">
+    <h2>Sesi Tapping Baru</h2>
+    <label>Nama <input name="name" required></label>
+    <label>Transport
+      <select name="transport" id="tap-transport">
+        <option value="tcp_server">TCP — MidLab listen (alat connect)</option>
+        <option value="tcp_client">TCP — MidLab connect ke alat</option>
+        <option value="serial">Serial (RS232)</option>
+      </select>
+    </label>
+    <div class="tap-tcp-fields">
+      <label>Host <input name="host" value="0.0.0.0"></label>
+      <label>Port <input name="port" type="number" value="2600"></label>
+    </div>
+    <div class="tap-serial-fields" hidden>
+      <label>Port <input name="serial_port" placeholder="/dev/ttyUSB0"></label>
+      <label>Baudrate
+        <select name="baudrate">
+          <option>9600</option><option>19200</option>
+          <option>38400</option><option>115200</option>
+        </select>
+      </label>
+      <label>Parity
+        <select name="parity"><option>N</option><option>E</option><option>O</option></select>
+      </label>
+    </div>
+    <label>Basis Protokol
+      <select name="protocol_basis">
+        <option value="AUTO">AUTO — deteksi saja, tidak membalas</option>
+        <option value="HL7">HL7 — balas ACK (echo MSH-10)</option>
+        <option value="ASTM">ASTM — balas ENQ/frame ACK</option>
+        <option value="RAW">RAW — pasif, saya yang operasikan</option>
+      </select>
+    </label>
+    <label>Mode Jawaban
+      <select name="response_mode">
+        <option value="uni">uni — ACK saja</option>
+        <option value="bidi">bidi — ACK + tandai query</option>
+      </select>
+    </label>
+    <menu>
+      <button value="cancel">Batal</button>
+      <button value="ok" id="tap-create">Mulai</button>
+    </menu>
+  </form>
+</dialog>
+{% endblock %}

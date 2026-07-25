@@ -381,3 +381,151 @@ const App = {
 
 // Init saat DOM ready
 document.addEventListener('DOMContentLoaded', () => App.init());
+
+// ============================================================
+// Tapping Data
+// ============================================================
+
+const Tap = {
+  sesiAktif: null,
+  events: [],
+
+  async muatDaftar() {
+    const rows = await App.api('/api/tap/sessions');
+    const tbody = document.querySelector('#tap-list tbody');
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${App.escapeHtml(r.name)}</td>
+        <td>${App.escapeHtml(r.transport)}</td>
+        <td><code>${App.escapeHtml(r.target)}</code></td>
+        <td>${App.escapeHtml(r.detected_protocol || r.protocol_basis)}</td>
+        <td><span class="badge badge-${App.escapeHtml(r.status)}">${App.escapeHtml(r.status)}</span></td>
+        <td>${r.bytes_rx}</td>
+        <td>${r.bytes_tx}</td>
+        <td>${r.message_count}</td>
+        <td><button class="btn btn-sm" data-tap-open="${r.id}">Buka</button></td>
+      </tr>
+    `).join('');
+  },
+
+  // Hex + ASCII berdampingan: byte kontrol (ENQ/ACK/STX) tidak kelihatan di ASCII,
+  // jadi hex wajib ada.
+  baris(ev, prev) {
+    const bytes = ev.hex.match(/../g) || [];
+    const hex = bytes.join(' ');
+    const ascii = bytes
+      .map(h => {
+        const b = parseInt(h, 16);
+        return b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.';
+      })
+      .join('');
+    const delta = prev
+      ? `+${(new Date(ev.t) - new Date(prev.t)).toString().padStart(5)}ms`
+      : '    0ms';
+    const arah = ev.dir === 'rx' ? '←RX' : '→TX';
+    const note = ev.note ? ` (${ev.note})` : '';
+    return `${delta} ${arah}${note}  ${hex}\n              ${ascii}`;
+  },
+
+  render() {
+    const showRx = document.getElementById('tap-show-rx').checked;
+    const showTx = document.getElementById('tap-show-tx').checked;
+    const el = document.getElementById('tap-stream');
+    let prev = null;
+    const baris = [];
+    for (const ev of this.events) {
+      if (ev.dir === 'meta') continue;
+      if (ev.dir === 'rx' && !showRx) continue;
+      if (ev.dir === 'tx' && !showTx) continue;
+      baris.push(this.baris(ev, prev));
+      prev = ev;
+    }
+    el.textContent = baris.join('\n');
+    el.scrollTop = el.scrollHeight;
+  },
+
+  buka(id) {
+    this.sesiAktif = id;
+    this.events = [];
+    document.getElementById('tap-live').hidden = false;
+    document.getElementById('tap-live-title').textContent = `Sesi #${id}`;
+
+    const es = new EventSource(`/api/tap/sessions/${id}/stream`);
+    es.onmessage = e => {
+      this.events.push(JSON.parse(e.data));
+      this.render();
+    };
+    es.addEventListener('done', () => {
+      es.close();
+      this.muatDaftar();
+    });
+  },
+
+  async kirimManual() {
+    const hex = document.getElementById('tap-manual').value.replace(/\s+/g, '');
+    if (!hex) return;
+    try {
+      await App.api(`/api/tap/sessions/${this.sesiAktif}/send`, {
+        method: 'POST', body: { hex },
+      });
+      document.getElementById('tap-manual').value = '';
+    } catch (err) {
+      App.toast(err.message, 'error');
+    }
+  },
+
+  async exportPython() {
+    // Bukan lewat App.api(): responsnya text/plain, bukan JSON.
+    const r = await fetch(`/api/tap/sessions/${this.sesiAktif}/export/python?index=0`);
+    if (!r.ok) {
+      App.toast('Tidak ada pesan lengkap — pakai export .bin', 'error');
+      return;
+    }
+    await navigator.clipboard.writeText(await r.text());
+    App.toast('Tersalin — siap ditempel ke file test', 'success');
+  },
+
+  init() {
+    document.getElementById('tap-new').onclick = () =>
+      document.getElementById('tap-dialog').showModal();
+
+    document.getElementById('tap-transport').onchange = e => {
+      const serial = e.target.value === 'serial';
+      document.querySelector('.tap-tcp-fields').hidden = serial;
+      document.querySelector('.tap-serial-fields').hidden = !serial;
+    };
+
+    document.getElementById('tap-form').onsubmit = async e => {
+      if (e.submitter?.value !== 'ok') return;
+      const body = Object.fromEntries(new FormData(e.target));
+      if (body.port) body.port = parseInt(body.port, 10);
+      if (body.baudrate) body.baudrate = parseInt(body.baudrate, 10);
+      try {
+        const r = await App.api('/api/tap/sessions', { method: 'POST', body });
+        await this.muatDaftar();
+        this.buka(r.id);
+      } catch (err) {
+        // Termasuk 409 saat port dipakai alat aktif — pesannya sudah jelas.
+        App.toast(err.message, 'error');
+      }
+    };
+
+    document.getElementById('tap-list').onclick = e => {
+      const id = e.target.dataset.tapOpen;
+      if (id) this.buka(parseInt(id, 10));
+    };
+
+    document.getElementById('tap-stop').onclick = () =>
+      App.api(`/api/tap/sessions/${this.sesiAktif}/stop`, { method: 'POST' });
+    document.getElementById('tap-export-bin').onclick = () =>
+      window.location = `/api/tap/sessions/${this.sesiAktif}/export/bin`;
+    document.getElementById('tap-export-py').onclick = () => this.exportPython();
+    document.getElementById('tap-send').onclick = () => this.kirimManual();
+    document.getElementById('tap-show-rx').onchange = () => this.render();
+    document.getElementById('tap-show-tx').onchange = () => this.render();
+
+    this.muatDaftar();
+  },
+};
+
+if (document.getElementById('tap-list')) Tap.init();
