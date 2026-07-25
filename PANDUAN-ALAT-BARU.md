@@ -9,6 +9,7 @@ mulai dari persiapan hardware hingga software berjalan.
 
 1. [Persiapan Hardware](#1-persiapan-hardware)
 2. [Identifikasi Protocol Alat](#2-identifikasi-protocol-alat)
+2b. [Tapping Data — menangkap komunikasi alat baru](#2b-tapping-data--menangkap-komunikasi-alat-baru)
 3. [Menambah Alat via Web Console](#3-menambah-alat-via-web-console)
 4. [Menambah Alat via Database](#4-menambah-alat-via-database)
 5. [Menjalankan Service TCP](#5-menjalankan-service-tcp)
@@ -136,6 +137,82 @@ Sebelum menambahkan alat, tentukan protocol komunikasinya:
 2. Capture data dari alat menggunakan tool serial monitor atau Wireshark
 3. Lihat apakah data dimulai dengan byte ENQ (0x05) → kemungkinan ASTM
 4. Lihat apakah ada string "MSH|" → kemungkinan HL7
+
+---
+
+## 2b. Tapping Data — menangkap komunikasi alat baru
+
+Sebelum menulis driver, tangkap dulu komunikasi aslinya. Menu **Tapping** (`/tap`)
+menggantikan langkah Wireshark/serial monitor di bab 2.
+
+> **Data yang di-tap TIDAK masuk `tbl_result` dan TIDAK dikirim ke LIS.**
+> Jangan menjalankannya pada alat yang service TCP-nya sedang aktif — MidLab
+> menolak port yang dipakai alat aktif, karena dua pihak tidak boleh meng-ACK
+> alat yang sama.
+
+### Kenapa MidLab perlu membalas
+
+Mode pasif murni sering tidak menghasilkan apa-apa: **alat tidak akan mengirim**
+bila handshake-nya menggantung. AR580, misalnya, kirim ulang tiap 3 detik lalu
+menyerah. Karena itu tapping membalas handshake — dan itu bisa dilakukan tanpa
+driver, karena handshake tidak bergantung pada isi pesan:
+
+| Basis | Yang dibalas |
+|---|---|
+| `AUTO` | Tidak membalas — hanya menebak protokolnya lalu melapor |
+| `HL7` | ACK tiap pesan MLLP, dengan MSA-2 memantulkan MSH-10 |
+| `ASTM` | ACK untuk ENQ dan tiap frame |
+| `RAW` | Tidak pernah membalas — Anda yang kirim manual |
+
+Mode jawaban `bidi` **tidak mengarang jawaban query**: ia meng-ACK, menandai
+query-nya, lalu diam. Menjawab query dengan order sungguhan butuh driver yang
+justru sedang Anda buat — yang dikejar di sini formatnya.
+
+### Langkah
+
+1. Buka `/tap` → **Sesi Baru**
+2. Pilih transport:
+   - **TCP — MidLab listen**: alat connect ke MidLab (paling umum)
+   - **TCP — MidLab connect**: alat menunggu di-connect
+   - **Serial**: colok langsung RS232 ke laptop (butuh keanggotaan grup `dialout`)
+3. Pilih basis protokol. Mulai dari `AUTO` bila belum tahu — ia akan menebak
+   berdasar ENQ (0x05) atau string `MSH|`, lalu Anda ulangi sesi dengan basis
+   yang tepat supaya alat mau mengirim.
+4. Jalankan pemeriksaan di alat, lalu amati hex + ASCII yang masuk.
+
+### Salah baud rate menyerupai masalah protokol
+
+Kalau byte masuk tapi tidak membentuk frame valid, halaman akan menampilkan
+peringatan **"cek baud rate"**. Ini jebakan klasik: setelan serial yang salah
+menghasilkan byte sampah yang persis mirip protokol tak dikenal. Cek baudrate,
+parity, dan stopbits di alat sebelum menyimpulkan protokolnya aneh.
+
+### Dari capture ke driver
+
+| Tombol | Untuk |
+|---|---|
+| **Download `.bin`** | Byte RX mentah — arsip dan parse ulang |
+| **Copy sebagai Python bytes** | Tempel langsung jadi fixture test |
+
+Tombol kedua yang menutup lingkaran. Test driver di repo ini semuanya berjangkar
+pada byte string verbatim (lihat `ORU_DOC` di `tests/test_aruma_ar580.py`). Saat
+driver AR580 dibuat, transkripsi manual dari PDF sempat salah menghitung pipa di
+segment OBR dan baru tertangkap oleh test — export otomatis menghapus seluruh
+kelas kesalahan itu.
+
+Setelah punya capture, serahkan ke Claude Code untuk dianalisis dan ditulis
+driver-nya, lalu lanjut ke bab 6 (Membuat Protocol Module Baru).
+
+### Via CLI (tanpa web console)
+
+```bash
+python3 -m services.tap.service --name "AR580" --transport tcp_server \
+    --port 2600 --basis HL7
+python3 -m services.tap.service --name "Sysmex" --transport serial \
+    --serial-port /dev/ttyUSB0 --baudrate 9600 --basis AUTO
+```
+
+Capture tersimpan di `/var/log/midlab/tap/<id>.jsonl`.
 
 ---
 
