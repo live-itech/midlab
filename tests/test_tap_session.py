@@ -103,11 +103,16 @@ class TestTapSession:
         # PENGAMAN INTI: byte harus di disk sebelum ACK dikirim. Kalau proses
         # mati setelah ACK tapi sebelum tulisan, alat tidak akan kirim ulang
         # dan hasil pasien hilang tanpa jejak.
-        urutan = []
+        rx_saat_write = []
 
         class TransportPengintai(TransportPalsu):
             async def write(self, data: bytes) -> None:
-                urutan.append(("write", len(read_events(rec_path))))
+                # Cek spesifik: event RX (byte alat) harus SUDAH ada di file saat
+                # ACK hendak dikirim. Menghitung "ada event apa pun" tidak cukup —
+                # event TX/ACK ditulis persis sebelum write() ini, jadi jumlah
+                # total selalu >= 1 walau urutannya dibalik.
+                ev = read_events(rec_path)
+                rx_saat_write.append(any(e["dir"] == "rx" for e in ev))
                 await super().write(data)
 
         t = TransportPengintai([ORU])
@@ -115,8 +120,8 @@ class TestTapSession:
             s = TapSession(t, "HL7", rec)
             await s.run()
 
-        # Saat write() dipanggil, event RX sudah tertulis ke file.
-        assert urutan[0][1] >= 1, "ACK dikirim sebelum RX terekam"
+        # Saat write() pertama dipanggil, byte RX sudah tertulis ke file.
+        assert rx_saat_write[0] is True, "ACK dikirim sebelum RX terekam"
 
     @pytest.mark.asyncio
     async def test_menghitung_byte_dan_pesan(self, rec_path):

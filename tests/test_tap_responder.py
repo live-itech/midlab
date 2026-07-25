@@ -118,6 +118,12 @@ class TestMllpResponder:
         r = MllpResponder()
         assert b"ACK" in r.feed(ORU)[0]
 
+    def test_ack_memantulkan_trigger_event(self):
+        # ACK ke ORU^R01 harus ACK^R01 — alat AR580 memvalidasi MSH-9 balasan
+        # (dokumen tabel 11); ACK telanjang ditolak.
+        r = MllpResponder()
+        assert b"ACK^R01" in r.feed(ORU)[0]
+
     def test_pesan_terkumpul(self):
         r = MllpResponder()
         r.feed(ORU)

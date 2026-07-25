@@ -54,10 +54,15 @@ class MllpResponder(BaseResponder):
 
         f = msh.split("|")
         control_id = f[9] if len(f) > 9 else ""
+        # MSH-9 balasan memantulkan trigger event: ORU^R01 → ACK^R01. Alat
+        # (mis. AR580, dokumen tabel 11) memvalidasi ini; ACK telanjang ditolak.
+        tipe = f[8] if len(f) > 8 else ""
+        trigger = tipe.split("^", 1)[1] if "^" in tipe else ""
+        msg_type = f"ACK^{trigger}" if trigger else "ACK"
         stempel = self._timestamp or datetime.now().strftime("%Y%m%d%H%M%S")
 
         badan = (
-            f"MSH|^~\\&|MidLab|TAP|||{stempel}||ACK|{control_id}|P|2.3.1\r"
+            f"MSH|^~\\&|MidLab|TAP|||{stempel}||{msg_type}|{control_id}|P|2.3.1\r"
             f"MSA|AA|{control_id}\r"
         )
         return MLLP_START_BYTE + badan.encode("utf-8") + MLLP_TRAILER
