@@ -19,6 +19,7 @@ Konfigurasi dari config.yaml:
 """
 
 import asyncio
+import json
 import os
 import socket
 import time
@@ -26,7 +27,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Header, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -39,6 +40,7 @@ from lib.db import (
     TblResult,
     TblOrder,
     TblServiceLog,
+    TblTapSession,
     get_all_settings,
     get_latest_status_per_instrument,
     get_setting,
@@ -50,6 +52,11 @@ from lib.network import get_local_ip
 from lib.utils import get_logger
 from protocols.base import _PROTOCOL_REGISTRY
 
+from services.tap import service as tap_service
+from services.tap.export import messages_from_events, rx_bytes, to_python_bytes
+from services.tap.recorder import TapRecorder, read_events
+from services.tap.service import session_log_path
+from services.tap.session import TapSession
 from services.web_console.watchdog import ServiceWatchdog
 
 
@@ -110,6 +117,10 @@ async def page_settings(request: Request):
 @app.get("/api-docs", response_class=HTMLResponse)
 async def page_api_docs(request: Request):
     return _templates.TemplateResponse(request, "api_docs.html", {"active_page": "api_docs"})
+
+@app.get("/tap", response_class=HTMLResponse)
+async def tap_page(request: Request):
+    return _templates.TemplateResponse(request, "tap.html", {"active_page": "tap"})
 
 @app.get("/results", response_class=HTMLResponse)
 async def page_results(request: Request):
@@ -1533,6 +1544,251 @@ async def skip_lis_event(event_id: int, x_api_key: str = Header(None)):
     from lib.db import update_lis_event_status
     ok = update_lis_event_status(event_id, "skipped", error_message="manually skipped")
     return MessageResponse(success=ok, message="event skipped" if ok else "event not found")
+
+
+# ============================================================
+# [Tap] — capture alat yang belum punya driver
+# ============================================================
+
+class TapSessionResponse(BaseModel):
+    id: int
+    name: str
+    transport: str
+    target: str
+    protocol_basis: str
+    detected_protocol: Optional[str]
+    response_mode: str
+    status: str
+    bytes_rx: int
+    bytes_tx: int
+    message_count: int
+    started_at: Optional[str]
+    stopped_at: Optional[str]
+
+
+class TapSessionCreate(BaseModel):
+    name: str
+    transport: str                 # tcp_server | tcp_client | serial
+    protocol_basis: str            # ASTM | HL7 | RAW | AUTO
+    response_mode: str = "uni"
+    host: str = "0.0.0.0"
+    port: Optional[int] = None
+    serial_port: Optional[str] = None
+    baudrate: int = 9600
+    parity: str = "N"
+
+
+class TapSendRequest(BaseModel):
+    hex: str
+
+
+class _TapRunner:
+    """
+    Menjalankan sesi tap sebagai task asyncio di dalam proses web console.
+
+    Sesi tapping berumur pendek dan dioperasikan interaktif, jadi tidak dijadikan
+    service systemd sendiri seperti tcp_*.
+    """
+
+    def __init__(self):
+        self._sesi: dict = {}    # id → (TapSession, asyncio.Task)
+
+    def start(self, row_id, transport, basis, mode) -> None:
+        async def jalan():
+            path = session_log_path(row_id)
+            await transport.open()
+            with TapRecorder(path) as rec:
+                tap = TapSession(transport, basis, rec, mode=mode)
+                self._sesi[row_id] = (tap, asyncio.current_task())
+                try:
+                    await tap.run()
+                    status, err = "stopped", None
+                except Exception as e:
+                    status, err = "error", str(e)
+                finally:
+                    tap_service._simpan_hasil(row_id, tap, status, err)
+                    self._sesi.pop(row_id, None)
+
+        asyncio.create_task(jalan())
+
+    def stop(self, row_id: int) -> None:
+        entri = self._sesi.get(row_id)
+        if entri is not None:
+            entri[0].stop()
+
+    def get(self, row_id: int):
+        entri = self._sesi.get(row_id)
+        return entri[0] if entri else None
+
+
+_TAP_RUNNER = _TapRunner()
+
+
+@app.get("/api/tap/sessions", response_model=list[TapSessionResponse])
+async def list_tap_sessions(x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    session = DBManager().get_session()
+    try:
+        rows = (
+            session.query(TblTapSession)
+            .order_by(TblTapSession.id.desc())
+            .limit(100)
+            .all()
+        )
+        return [
+            TapSessionResponse(
+                id=r.id, name=r.name, transport=r.transport, target=r.target,
+                protocol_basis=r.protocol_basis,
+                detected_protocol=r.detected_protocol,
+                response_mode=r.response_mode, status=r.status,
+                bytes_rx=r.bytes_rx, bytes_tx=r.bytes_tx,
+                message_count=r.message_count,
+                started_at=r.started_at.isoformat() if r.started_at else None,
+                stopped_at=r.stopped_at.isoformat() if r.stopped_at else None,
+            )
+            for r in rows
+        ]
+    finally:
+        session.close()
+
+
+@app.post("/api/tap/sessions", response_model=TapSessionResponse)
+async def create_tap_session(body: TapSessionCreate, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    session = DBManager().get_session()
+    try:
+        if body.transport == "tcp_server":
+            if body.port is None:
+                raise HTTPException(400, "port wajib untuk tcp_server")
+            try:
+                tap_service.check_port_free(body.port, session)
+            except tap_service.TapPortConflict as e:
+                # 409: bukan salah format, tapi bentrok dengan keadaan sekarang.
+                raise HTTPException(409, str(e))
+            transport = tap_service.build_transport(
+                "tcp_server", host=body.host, port=body.port
+            )
+        elif body.transport == "tcp_client":
+            if body.port is None:
+                raise HTTPException(400, "port wajib untuk tcp_client")
+            transport = tap_service.build_transport(
+                "tcp_client", host=body.host, port=body.port
+            )
+        elif body.transport == "serial":
+            if not body.serial_port:
+                raise HTTPException(400, "serial_port wajib untuk transport serial")
+            transport = tap_service.build_transport(
+                "serial", port=body.serial_port,
+                baudrate=body.baudrate, parity=body.parity,
+            )
+        else:
+            raise HTTPException(400, f"transport '{body.transport}' tidak dikenali")
+
+        row = TblTapSession(
+            name=body.name, transport=body.transport,
+            target=transport.description, protocol_basis=body.protocol_basis,
+            response_mode=body.response_mode, status="running",
+            started_at=timeutil.now_naive(),
+        )
+        session.add(row)
+        session.commit()
+
+        _TAP_RUNNER.start(row.id, transport, body.protocol_basis, body.response_mode)
+
+        return TapSessionResponse(
+            id=row.id, name=row.name, transport=row.transport, target=row.target,
+            protocol_basis=row.protocol_basis, detected_protocol=None,
+            response_mode=row.response_mode, status=row.status,
+            bytes_rx=0, bytes_tx=0, message_count=0,
+            started_at=row.started_at.isoformat(), stopped_at=None,
+        )
+    finally:
+        session.close()
+
+
+@app.post("/api/tap/sessions/{session_id}/stop", response_model=MessageResponse)
+async def stop_tap_session(session_id: int, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    _TAP_RUNNER.stop(session_id)
+    return MessageResponse(success=True, message=f"Sesi tap #{session_id} dihentikan")
+
+
+@app.get("/api/tap/sessions/{session_id}/events")
+async def get_tap_events(session_id: int, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    return read_events(session_log_path(session_id))
+
+
+@app.get("/api/tap/sessions/{session_id}/export/bin")
+async def export_tap_bin(session_id: int, x_api_key: str = Header(None)):
+    _verify_api_key(x_api_key)
+    data = rx_bytes(read_events(session_log_path(session_id)))
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="tap_{session_id}.bin"'
+        },
+    )
+
+
+@app.get("/api/tap/sessions/{session_id}/export/python")
+async def export_tap_python(
+    session_id: int, index: int = 0, x_api_key: str = Header(None)
+):
+    _verify_api_key(x_api_key)
+    pesan = messages_from_events(read_events(session_log_path(session_id)))
+    if not pesan:
+        raise HTTPException(
+            404,
+            "Tidak ada pesan lengkap. Basis RAW tidak punya batas pesan — "
+            "pakai export .bin.",
+        )
+    if index >= len(pesan):
+        raise HTTPException(404, f"Pesan #{index} tidak ada (total {len(pesan)})")
+    return Response(content=to_python_bytes(pesan[index]), media_type="text/plain")
+
+
+@app.post("/api/tap/sessions/{session_id}/send", response_model=MessageResponse)
+async def send_tap_manual(
+    session_id: int, body: TapSendRequest, x_api_key: str = Header(None)
+):
+    """Kirim byte yang diketik operator — dipakai basis RAW."""
+    _verify_api_key(x_api_key)
+    tap = _TAP_RUNNER.get(session_id)
+    if tap is None:
+        raise HTTPException(404, f"Sesi #{session_id} tidak sedang jalan")
+    try:
+        data = bytes.fromhex(body.hex)
+    except ValueError:
+        raise HTTPException(
+            400, "hex tidak valid — contoh yang benar: '05' atau '0b 4d 53 48'"
+        )
+    await tap.send_manual(data)
+    return MessageResponse(success=True, message=f"{len(data)} byte terkirim")
+
+
+@app.get("/api/tap/sessions/{session_id}/stream")
+async def stream_tap(session_id: int, x_api_key: str = Header(None)):
+    """Stream event tap via SSE — mekanisme yang sama dengan log viewer."""
+    _verify_api_key(x_api_key)
+
+    async def gen():
+        path = session_log_path(session_id)
+        terkirim = 0
+        while True:
+            events = read_events(path)
+            for e in events[terkirim:]:
+                yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+            terkirim = len(events)
+
+            tap = _TAP_RUNNER.get(session_id)
+            if tap is None:
+                yield "event: done\ndata: {}\n\n"
+                return
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 # ============================================================
