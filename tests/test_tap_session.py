@@ -4,10 +4,15 @@ import asyncio
 
 import pytest
 
-from lib.db import TblTapSession
+from lib.db import TblTapSession, TblInstrument
 from services.tap.recorder import TapRecorder, read_events
 from services.tap.session import TapSession
 from services.tap.transport.base import BaseTransport
+from services.tap.service import (
+    TapPortConflict, check_port_free, build_transport, session_log_path,
+)
+from services.tap.transport.tcp import TcpServerTransport, TcpClientTransport
+from services.tap.transport.serial_port import SerialTransport
 
 
 VT, FS, CR = b"\x0b", b"\x1c", b"\x0d"
@@ -237,3 +242,53 @@ class TestTapSession:
             s = TapSession(t, "HL7", rec, on_event=terlihat.append)
             await s.run()
         assert any(e["dir"] == "rx" for e in terlihat)
+
+
+class TestPortGuard:
+    def test_port_bebas_lolos(self, db_session):
+        check_port_free(2600, db_session)      # tidak melempar
+
+    def test_port_dipakai_alat_aktif_ditolak(self, db_session):
+        # Bukan cuma soal bind: mencegah DUA pihak meng-ACK alat yang sama.
+        db_session.add(TblInstrument(
+            name="AR580", ip_address="0.0.0.0", port=2600,
+            protocol="HL7_ARUMA_AR580", mode="unidirectional",
+            connection="server", is_active=True,
+        ))
+        db_session.commit()
+        with pytest.raises(TapPortConflict, match="AR580"):
+            check_port_free(2600, db_session)
+
+    def test_port_dipakai_alat_nonaktif_lolos(self, db_session):
+        db_session.add(TblInstrument(
+            name="Lama", ip_address="0.0.0.0", port=2600,
+            protocol="HL7", mode="unidirectional",
+            connection="server", is_active=False,
+        ))
+        db_session.commit()
+        check_port_free(2600, db_session)      # tidak melempar
+
+
+class TestBuildTransport:
+    def test_tcp_server(self):
+        t = build_transport("tcp_server", host="0.0.0.0", port=2600)
+        assert isinstance(t, TcpServerTransport)
+        assert t.description == "tcp-server 0.0.0.0:2600"
+
+    def test_tcp_client(self):
+        t = build_transport("tcp_client", host="10.0.0.5", port=9100)
+        assert isinstance(t, TcpClientTransport)
+
+    def test_serial(self):
+        t = build_transport("serial", port="/dev/ttyUSB0", baudrate=19200)
+        assert isinstance(t, SerialTransport)
+        assert "19200" in t.description
+
+    def test_transport_tak_dikenal_ditolak(self):
+        with pytest.raises(ValueError, match="tidak dikenali"):
+            build_transport("carrier_pigeon")
+
+
+class TestSessionLogPath:
+    def test_path_memakai_id(self):
+        assert session_log_path(42).endswith("/tap/42.jsonl")
