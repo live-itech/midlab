@@ -14,12 +14,33 @@ import json
 import os
 from datetime import datetime
 
-from lib.utils import get_logger
+from lib.utils import get_logger, LOG_DIR, LOG_DIR_FALLBACK
 
 
 logger = get_logger("tap_recorder")
 
-TAP_LOG_DIR = "/var/log/midlab/tap"
+
+def _resolve_tap_dir() -> str:
+    """
+    Pilih direktori capture yang bisa ditulis.
+
+    Ikuti fallback yang sama dengan lib.utils logging: coba /var/log/midlab/tap,
+    jatuh ke /tmp/midlab/tap bila /var/log/midlab tidak writable (dev, atau
+    service dijalankan user yang bukan pemilik /var/log/midlab). Tanpa ini,
+    seluruh sesi tap mati karena PermissionError saat membuat subdir.
+    """
+    for base in (LOG_DIR, LOG_DIR_FALLBACK):
+        # Direktori 'tap' sudah ada dan writable → langsung pakai.
+        d = os.path.join(base, "tap")
+        if os.path.isdir(d) and os.access(d, os.W_OK):
+            return d
+        # Base ada & writable → nanti subdir 'tap' bisa dibuat di sini.
+        if os.path.isdir(base) and os.access(base, os.W_OK):
+            return d
+    return os.path.join(LOG_DIR_FALLBACK, "tap")
+
+
+TAP_LOG_DIR = _resolve_tap_dir()
 
 _ARAH_VALID = ("rx", "tx", "meta")
 

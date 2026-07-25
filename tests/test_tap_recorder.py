@@ -1,9 +1,11 @@
 """Test TapRecorder — JSONL, hex, flush-per-event."""
 
 import json
+import os
 
 import pytest
 
+from services.tap import recorder as rec_mod
 from services.tap.recorder import TapRecorder, read_events
 
 
@@ -89,6 +91,24 @@ class TestTapRecorder:
         with TapRecorder(p) as r:
             r.write_event("rx", b"x")
         assert len(read_events(p)) == 1
+
+
+class TestResolveTapDir:
+    def test_pakai_primary_bila_writable(self, tmp_path, monkeypatch):
+        primary = str(tmp_path / "varlog")
+        os.makedirs(primary, exist_ok=True)
+        monkeypatch.setattr(rec_mod, "LOG_DIR", primary)
+        monkeypatch.setattr(rec_mod, "LOG_DIR_FALLBACK", "/tmp/midlab")
+        assert rec_mod._resolve_tap_dir() == os.path.join(primary, "tap")
+
+    def test_fallback_saat_primary_tak_writable(self, tmp_path, monkeypatch):
+        # Primary tidak ada & induknya tak bisa ditulis → jatuh ke fallback.
+        primary = "/proc/tidak-bisa-dibuat/midlab"
+        fallback = str(tmp_path / "midlab")
+        os.makedirs(fallback, exist_ok=True)
+        monkeypatch.setattr(rec_mod, "LOG_DIR", primary)
+        monkeypatch.setattr(rec_mod, "LOG_DIR_FALLBACK", fallback)
+        assert rec_mod._resolve_tap_dir() == os.path.join(fallback, "tap")
 
 
 class TestReadEvents:
