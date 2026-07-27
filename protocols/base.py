@@ -161,6 +161,7 @@ _PROTOCOL_REGISTRY = {
     "HL7_MINDRAY_BS200E": "protocols.mindray_bs200e.module",
     "HL7_MINDRAY_BC5150": "protocols.mindray_bc5150.module",
     "HL7_ARUMA_AR580": "protocols.aruma_ar580.module",
+    "HL7_SD_BIOSENSOR_F200": "protocols.sd_biosensor_f200.module",
 }
 
 
