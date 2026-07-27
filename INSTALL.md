@@ -195,15 +195,41 @@ normal (import-nya lazy), lalu gagal jauh kemudian saat fitur yang memakainya
 dipakai. Ini persis yang terjadi saat `pyserial` ditambahkan bersama fitur
 Tapping Data.
 
+### Dua layout yang mungkin — cek dulu yang mana
+
+`deploy.sh` selalu menyalin **dari direktori tempat skrip itu berada**
+(`REPO_DIR` diturunkan dari `BASH_SOURCE`), bukan dari `/opt/midlab`. Jadi
+langkah `git pull`-nya bergantung pada layout server:
+
+```bash
+ls -d /opt/midlab/.git 2>/dev/null && echo "layout A" || echo "layout B"
+```
+
+| | **Layout A** — `/opt/midlab` hasil `git clone` (§2) | **Layout B** — repo terpisah, `/opt/midlab` cuma target rsync |
+|---|---|---|
+| Ambil kode baru | `cd /opt/midlab && sudo git pull origin main` | `cd <repo> && git pull origin main` |
+| Deploy | `sudo bash /opt/midlab/scripts/deploy.sh` | `sudo bash <repo>/scripts/deploy.sh` |
+
+⚠️ **Jangan `git pull` di `/opt/midlab` pada layout B** — di sana tidak ada
+`.git`, perintahnya gagal, dan bila dirangkai dengan `&&` seluruh deploy ikut
+batal tanpa mengubah apa pun. Gejalanya membingungkan: tidak ada error yang
+mencolok, service tetap jalan versi lama.
+
+Pada layout B, `/opt/midlab` juga tidak berisi file `*.md` (di-exclude rsync) —
+dokumentasi hanya ada di direktori repo. Itu normal.
+
 ### Prosedur update yang aman
+
+Contoh di bawah memakai **layout A**; untuk layout B ganti `cd /opt/midlab &&
+sudo git pull` dengan `git pull` di direktori repo, dan tunjuk `deploy.sh` di
+sana.
 
 ```bash
 cd /opt/midlab
 sudo git pull origin main
 
-# 1. Preview dulu — rsync memakai --delete, dan /opt/midlab bukan git checkout
-#    kalau deploy dilakukan dari direktori repo terpisah. Hot-fix yang pernah
-#    ditulis langsung di /opt/midlab akan terhapus.
+# 1. Preview dulu — rsync memakai --delete. Hot-fix yang pernah ditulis
+#    langsung di /opt/midlab akan terhapus.
 sudo bash scripts/deploy.sh --dry-run
 
 # 2. Dependency baru? Bandingkan requirements.txt dengan isi venv:
