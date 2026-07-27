@@ -48,56 +48,104 @@
   <pre class="tap-stream" id="tap-stream"></pre>
 
   <div class="tap-send">
-    <input type="text" id="tap-manual" placeholder="kirim manual (hex, mis. 05 06)">
-    <button class="btn" id="tap-send">Kirim</button>
+    <input type="text" class="form-input" id="tap-manual"
+           placeholder="Kirim manual — hex, mis. 05 06" autocomplete="off">
+    <button class="btn btn-primary" id="tap-send">Kirim</button>
   </div>
 </div>
 
-<dialog id="tap-dialog">
-  <form method="dialog" id="tap-form">
-    <h2>Sesi Tapping Baru</h2>
-    <label>Nama <input name="name" required></label>
-    <label>Transport
-      <select name="transport" id="tap-transport">
-        <option value="tcp_server">TCP — MidLab listen (alat connect)</option>
-        <option value="tcp_client">TCP — MidLab connect ke alat</option>
-        <option value="serial">Serial (RS232)</option>
-      </select>
-    </label>
-    <div class="tap-tcp-fields">
-      <label>Host <input name="host" value="0.0.0.0"></label>
-      <label>Port <input name="port" type="number" value="2600"></label>
+<!-- Modal Sesi Tapping Baru -->
+<div class="modal-overlay" id="tap-dialog">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>Sesi Tapping Baru</h3>
+      <button class="modal-close" onclick="App.closeModal('tap-dialog')">&times;</button>
     </div>
-    <div class="tap-serial-fields" hidden>
-      <label>Port <input name="serial_port" placeholder="/dev/ttyUSB0"></label>
-      <label>Baudrate
-        <select name="baudrate">
-          <option>9600</option><option>19200</option>
-          <option>38400</option><option>115200</option>
-        </select>
-      </label>
-      <label>Parity
-        <select name="parity"><option>N</option><option>E</option><option>O</option></select>
-      </label>
+    <div class="modal-body">
+      <form id="tap-form" onsubmit="return false;">
+        <div class="form-group">
+          <label class="form-label" for="tap-f-name">Nama Sesi</label>
+          <input type="text" class="form-input" id="tap-f-name" name="name"
+                 placeholder="Sysmex XN-1000 — cek frame" autocomplete="off">
+          <span class="form-error" id="tap-e-name"></span>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="tap-transport">Transport</label>
+          <select class="form-select" name="transport" id="tap-transport">
+            <option value="tcp_server">TCP — MidLab listen (alat connect ke sini)</option>
+            <option value="tcp_client">TCP — MidLab connect ke alat</option>
+            <option value="serial">Serial (RS232)</option>
+          </select>
+        </div>
+
+        <div class="tap-tcp-fields">
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="tap-f-host">Host / IP</label>
+              <input type="text" class="form-input" id="tap-f-host" name="host"
+                     value="0.0.0.0" placeholder="0.0.0.0" autocomplete="off">
+              <span class="form-error" id="tap-e-host"></span>
+              <small class="form-hint" id="tap-host-hint">0.0.0.0 = dengarkan semua interface</small>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="tap-f-port">Port</label>
+              <input type="number" class="form-input" id="tap-f-port" name="port"
+                     value="2600" min="1" max="65535" placeholder="2600">
+              <span class="form-error" id="tap-e-port"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="tap-serial-fields hidden">
+          <div class="form-group">
+            <label class="form-label" for="tap-f-serial">Serial Port</label>
+            <input type="text" class="form-input" id="tap-f-serial" name="serial_port"
+                   placeholder="/dev/ttyUSB0" autocomplete="off">
+            <span class="form-error" id="tap-e-serial"></span>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label" for="tap-f-baud">Baudrate</label>
+              <select class="form-select" name="baudrate" id="tap-f-baud">
+                <option>9600</option><option>19200</option>
+                <option>38400</option><option>115200</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="tap-f-parity">Parity</label>
+              <select class="form-select" name="parity" id="tap-f-parity">
+                <option value="N">N — None</option>
+                <option value="E">E — Even</option>
+                <option value="O">O — Odd</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="tap-f-basis">Basis Protokol</label>
+          <select class="form-select" name="protocol_basis" id="tap-f-basis">
+            <option value="AUTO">AUTO — deteksi saja, tidak membalas</option>
+            <option value="HL7">HL7 — balas ACK (echo MSH-10)</option>
+            <option value="ASTM">ASTM — balas ENQ/frame ACK</option>
+            <option value="RAW">RAW — pasif, saya yang operasikan</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="tap-f-response">Mode Jawaban</label>
+          <select class="form-select" name="response_mode" id="tap-f-response">
+            <option value="uni">uni — ACK saja</option>
+            <option value="bidi">bidi — ACK + tandai query</option>
+          </select>
+        </div>
+      </form>
     </div>
-    <label>Basis Protokol
-      <select name="protocol_basis">
-        <option value="AUTO">AUTO — deteksi saja, tidak membalas</option>
-        <option value="HL7">HL7 — balas ACK (echo MSH-10)</option>
-        <option value="ASTM">ASTM — balas ENQ/frame ACK</option>
-        <option value="RAW">RAW — pasif, saya yang operasikan</option>
-      </select>
-    </label>
-    <label>Mode Jawaban
-      <select name="response_mode">
-        <option value="uni">uni — ACK saja</option>
-        <option value="bidi">bidi — ACK + tandai query</option>
-      </select>
-    </label>
-    <menu>
-      <button value="cancel">Batal</button>
-      <button value="ok" id="tap-create">Mulai</button>
-    </menu>
-  </form>
-</dialog>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="App.closeModal('tap-dialog')">Batal</button>
+      <button class="btn btn-primary" id="tap-create">Mulai Tapping</button>
+    </div>
+  </div>
+</div>
 {% endblock %}

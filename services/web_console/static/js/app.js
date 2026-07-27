@@ -286,6 +286,49 @@ const App = {
     return div.innerHTML;
   },
 
+  // ---------- Validasi input jaringan ----------
+  // Dipakai form Instrument dan form Sesi Tapping. Return '' kalau valid,
+  // atau pesan error siap tampil.
+
+  // IPv4 dotted-quad dengan cek tiap oktet <= 255.
+  isIPv4(v) {
+    const parts = v.split('.');
+    if (parts.length !== 4) return false;
+    return parts.every(p => /^\d{1,3}$/.test(p) && Number(p) <= 255);
+  },
+
+  // Hostname RFC 1123: label alfanumerik + tanda hubung di tengah, dipisah titik.
+  isHostname(v) {
+    if (v.length > 253) return false;
+    return v.split('.').every(l =>
+      l.length >= 1 && l.length <= 63 && /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?$/.test(l));
+  },
+
+  // tujuan=true berarti alamat ini dipakai untuk connect keluar, jadi
+  // 0.0.0.0 (wildcard listen) ditolak.
+  validasiHost(v, tujuan = false) {
+    if (!v) return 'Host wajib diisi — IP atau hostname.';
+    if (/\s/.test(v)) return 'Host tidak boleh mengandung spasi.';
+    if (v.includes(':')) return 'Jangan sertakan port di sini — isi di kolom Port.';
+    if (this.isIPv4(v)) {
+      if (tujuan && v === '0.0.0.0') return '0.0.0.0 tidak bisa jadi tujuan — isi IP alat.';
+      return '';
+    }
+    // Angka-dan-titik tapi gagal cek IPv4 = IP salah ketik, bukan hostname.
+    if (/^[\d.]+$/.test(v)) return 'Format IP tidak valid, mis. 192.168.1.100';
+    if (this.isHostname(v)) return '';
+    return 'Host tidak valid — isi IP (192.168.1.100) atau hostname (alat-lab.local).';
+  },
+
+  validasiPort(v) {
+    const s = String(v).trim();
+    if (!s) return 'Port wajib diisi.';
+    if (!/^\d+$/.test(s)) return 'Port harus angka.';
+    const n = Number(s);
+    if (n < 1 || n > 65535) return 'Port harus antara 1 dan 65535.';
+    return '';
+  },
+
   formatUptime(seconds) {
     if (seconds == null) return '-';
     const d = Math.floor(seconds / 86400);
@@ -485,29 +528,116 @@ const Tap = {
     App.toast('Tersalin — siap ditempel ke file test', 'success');
   },
 
-  init() {
-    document.getElementById('tap-new').onclick = () =>
-      document.getElementById('tap-dialog').showModal();
+  // Tampilkan/bersihkan pesan error di bawah satu field.
+  tandaiError(fieldId, errorId, pesan) {
+    const input = document.getElementById(fieldId);
+    const err = document.getElementById(errorId);
+    input.classList.toggle('is-invalid', !!pesan);
+    err.textContent = pesan || '';
+    err.classList.toggle('show', !!pesan);
+    return !pesan;
+  },
 
-    document.getElementById('tap-transport').onchange = e => {
-      const serial = e.target.value === 'serial';
-      document.querySelector('.tap-tcp-fields').hidden = serial;
-      document.querySelector('.tap-serial-fields').hidden = !serial;
+  // Validasi form sesi baru. Return body siap-kirim, atau null kalau ada error.
+  validasiForm() {
+    const transport = document.getElementById('tap-transport').value;
+    const serial = transport === 'serial';
+    let ok = true;
+
+    const name = document.getElementById('tap-f-name').value.trim();
+    ok = this.tandaiError('tap-f-name', 'tap-e-name',
+      name ? '' : 'Nama sesi wajib diisi.') && ok;
+
+    const body = {
+      name,
+      transport,
+      protocol_basis: document.getElementById('tap-f-basis').value,
+      response_mode: document.getElementById('tap-f-response').value,
     };
 
-    document.getElementById('tap-form').onsubmit = async e => {
-      if (e.submitter?.value !== 'ok') return;
-      const body = Object.fromEntries(new FormData(e.target));
-      if (body.port) body.port = parseInt(body.port, 10);
-      if (body.baudrate) body.baudrate = parseInt(body.baudrate, 10);
-      try {
-        const r = await App.api('/api/tap/sessions', { method: 'POST', body });
-        await this.muatDaftar();
-        this.buka(r.id);
-      } catch (err) {
-        // Termasuk 409 saat port dipakai alat aktif — pesannya sudah jelas.
-        App.toast(err.message, 'error');
-      }
+    if (serial) {
+      const sp = document.getElementById('tap-f-serial').value.trim();
+      ok = this.tandaiError('tap-f-serial', 'tap-e-serial',
+        sp ? '' : 'Serial port wajib diisi, mis. /dev/ttyUSB0.') && ok;
+      body.serial_port = sp;
+      body.baudrate = parseInt(document.getElementById('tap-f-baud').value, 10);
+      body.parity = document.getElementById('tap-f-parity').value;
+    } else {
+      const host = document.getElementById('tap-f-host').value.trim();
+      ok = this.tandaiError('tap-f-host', 'tap-e-host',
+        App.validasiHost(host, transport === 'tcp_client')) && ok;
+
+      const portRaw = document.getElementById('tap-f-port').value.trim();
+      const port = parseInt(portRaw, 10);
+      ok = this.tandaiError('tap-f-port', 'tap-e-port',
+        App.validasiPort(portRaw)) && ok;
+      body.host = host;
+      body.port = port;
+    }
+
+    return ok ? body : null;
+  },
+
+  resetForm() {
+    document.getElementById('tap-form').reset();
+    ['name', 'host', 'port', 'serial'].forEach(f =>
+      this.tandaiError(`tap-f-${f}`, `tap-e-${f}`, ''));
+    this.terapkanTransport();
+  },
+
+  // Tampilkan blok field sesuai transport terpilih + sesuaikan hint host.
+  terapkanTransport() {
+    const transport = document.getElementById('tap-transport').value;
+    const serial = transport === 'serial';
+    document.querySelector('.tap-tcp-fields').classList.toggle('hidden', serial);
+    document.querySelector('.tap-serial-fields').classList.toggle('hidden', !serial);
+
+    const host = document.getElementById('tap-f-host');
+    const hint = document.getElementById('tap-host-hint');
+    if (transport === 'tcp_client') {
+      // MidLab yang connect: 0.0.0.0 tidak masuk akal sebagai tujuan.
+      hint.textContent = 'IP atau hostname alat yang dituju, mis. 192.168.1.100';
+      if (host.value === '0.0.0.0') host.value = '';
+      host.placeholder = '192.168.1.100';
+    } else {
+      hint.textContent = '0.0.0.0 = dengarkan semua interface';
+      if (!host.value) host.value = '0.0.0.0';
+      host.placeholder = '0.0.0.0';
+    }
+  },
+
+  async simpanSesi() {
+    const body = this.validasiForm();
+    if (!body) return;
+
+    const btn = document.getElementById('tap-create');
+    btn.disabled = true;
+    try {
+      const r = await App.api('/api/tap/sessions', { method: 'POST', body });
+      App.closeModal('tap-dialog');
+      await this.muatDaftar();
+      this.buka(r.id);
+    } catch (err) {
+      // Termasuk 409 saat port dipakai alat aktif — pesannya sudah jelas.
+      App.toast(err.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  },
+
+  init() {
+    document.getElementById('tap-new').onclick = () => {
+      this.resetForm();
+      App.openModal('tap-dialog');
+    };
+
+    document.getElementById('tap-transport').onchange = () => this.terapkanTransport();
+    document.getElementById('tap-create').onclick = () => this.simpanSesi();
+
+    // Enter di field teks = submit, bukan reload halaman.
+    document.getElementById('tap-form').onsubmit = e => {
+      e.preventDefault();
+      this.simpanSesi();
     };
 
     document.getElementById('tap-list').onclick = e => {

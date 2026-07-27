@@ -50,29 +50,33 @@
       <form id="instrument-form" onsubmit="return false;">
         <input type="hidden" id="f-id">
         <div class="form-group">
-          <label class="form-label">Nama</label>
-          <input type="text" class="form-input" id="f-name" required placeholder="Sysmex XN-1000">
+          <label class="form-label" for="f-name">Nama</label>
+          <input type="text" class="form-input" id="f-name" placeholder="Sysmex XN-1000" autocomplete="off">
+          <span class="form-error" id="e-name"></span>
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label">IP Address</label>
-            <input type="text" class="form-input" id="f-ip" required placeholder="192.168.1.100">
+            <label class="form-label" for="f-ip">IP Address / Hostname</label>
+            <input type="text" class="form-input" id="f-ip" placeholder="192.168.1.100" autocomplete="off">
+            <span class="form-error" id="e-ip"></span>
+            <small class="form-hint" id="ip-hint">IP alat, atau hostname bila pakai DNS lokal</small>
           </div>
           <div class="form-group">
-            <label class="form-label">Port</label>
-            <input type="number" class="form-input" id="f-port" required placeholder="9100">
+            <label class="form-label" for="f-port">Port</label>
+            <input type="number" class="form-input" id="f-port" placeholder="9100" min="1" max="65535">
+            <span class="form-error" id="e-port"></span>
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label">Protocol</label>
+            <label class="form-label" for="f-protocol">Protocol</label>
             <select class="form-select" id="f-protocol"></select>
           </div>
           <div class="form-group">
-            <label class="form-label">Connection</label>
-            <select class="form-select" id="f-connection">
-              <option value="server">Server</option>
-              <option value="client">Client</option>
+            <label class="form-label" for="f-connection">Connection</label>
+            <select class="form-select" id="f-connection" onchange="toggleIpHint()">
+              <option value="server">Server — MidLab listen, alat connect</option>
+              <option value="client">Client — MidLab connect ke alat</option>
             </select>
           </div>
         </div>
@@ -130,6 +134,7 @@
             <label class="form-label" for="f-order-poll-interval">Order Poll Interval (detik)</label>
             <input type="number" class="form-input" id="f-order-poll-interval"
                    value="10" min="1" max="3600">
+            <span class="form-error" id="e-order-poll-interval"></span>
           </div>
 
           <div class="form-group d-flex items-center gap-2">
@@ -141,7 +146,7 @@
           </div>
           <small class="text-muted">Off = ResultSenderService lama yang handle (untuk staged rollout)</small>
 
-          <div id="verify-result" class="hidden" style="margin-top:8px;padding:8px;border-radius:4px"></div>
+          <div id="verify-result" class="alert hidden" style="margin-top:12px;margin-bottom:0"></div>
         </fieldset>
       </form>
     </div>
@@ -212,6 +217,29 @@
     }).join('');
   }
 
+  // Tampilkan/bersihkan error inline di bawah satu field.
+  function tandaiError(fieldId, errorId, pesan) {
+    const input = document.getElementById(fieldId);
+    const err = document.getElementById(errorId);
+    input.classList.toggle('is-invalid', !!pesan);
+    err.textContent = pesan || '';
+    err.classList.toggle('show', !!pesan);
+    return !pesan;
+  }
+
+  function bersihkanError() {
+    [['f-name', 'e-name'], ['f-ip', 'e-ip'], ['f-port', 'e-port'],
+     ['f-order-poll-interval', 'e-order-poll-interval']]
+      .forEach(([f, e]) => tandaiError(f, e, ''));
+  }
+
+  window.toggleIpHint = function() {
+    const client = document.getElementById('f-connection').value === 'client';
+    document.getElementById('ip-hint').textContent = client
+      ? 'IP/hostname alat yang dituju MidLab'
+      : 'IP tempat MidLab listen — 0.0.0.0 untuk semua interface';
+  };
+
   window.toggleBidirFields = function() {
     const mode = document.getElementById('f-mode').value;
     document.getElementById('bidir-fields').classList.toggle('hidden', mode !== 'bidirectional');
@@ -247,6 +275,8 @@
     const vr = document.getElementById('verify-result');
     vr.classList.add('hidden');
     vr.replaceChildren();
+    bersihkanError();
+    toggleIpHint();
     toggleBidirFields();
     App.openModal('instrument-modal');
   };
@@ -273,17 +303,47 @@
     const vr = document.getElementById('verify-result');
     vr.classList.add('hidden');
     vr.replaceChildren();
+    bersihkanError();
+    toggleIpHint();
     toggleBidirFields();
     toggleBroadcastInterval();
     App.openModal('instrument-modal');
   };
 
+  // Validasi sebelum kirim. Return false kalau ada field yang salah.
+  function validasiForm() {
+    let ok = true;
+
+    const name = document.getElementById('f-name').value.trim();
+    ok = tandaiError('f-name', 'e-name', name ? '' : 'Nama wajib diisi.') && ok;
+
+    // connection=client berarti MidLab connect keluar, jadi 0.0.0.0 ditolak.
+    const client = document.getElementById('f-connection').value === 'client';
+    const ip = document.getElementById('f-ip').value.trim();
+    ok = tandaiError('f-ip', 'e-ip', App.validasiHost(ip, client)) && ok;
+
+    const port = document.getElementById('f-port').value.trim();
+    ok = tandaiError('f-port', 'e-port', App.validasiPort(port)) && ok;
+
+    const poll = document.getElementById('f-order-poll-interval').value.trim();
+    const pollN = Number(poll);
+    ok = tandaiError('f-order-poll-interval', 'e-order-poll-interval',
+      (!poll || !/^\d+$/.test(poll) || pollN < 1 || pollN > 3600)
+        ? 'Isi angka 1–3600 detik.' : '') && ok;
+
+    return ok;
+  }
+
   window.saveInstrument = async function() {
+    if (!validasiForm()) {
+      App.toast('Ada isian yang belum benar — cek field bertanda merah', 'error');
+      return;
+    }
     const id = document.getElementById('f-id').value;
     const mode = document.getElementById('f-mode').value;
     const body = {
-      name: document.getElementById('f-name').value,
-      ip_address: document.getElementById('f-ip').value,
+      name: document.getElementById('f-name').value.trim(),
+      ip_address: document.getElementById('f-ip').value.trim(),
       port: parseInt(document.getElementById('f-port').value),
       protocol: document.getElementById('f-protocol').value,
       connection: document.getElementById('f-connection').value,
@@ -342,49 +402,52 @@
     }
   };
 
+  // Pakai kelas .alert-* supaya ikut dark mode; style inline lama selalu terang.
+  function tampilVerify(varian, isi) {
+    const el = document.getElementById('verify-result');
+    el.className = `alert alert-${varian}`;
+    el.style.marginTop = '12px';
+    el.style.marginBottom = '0';
+    el.replaceChildren();
+    if (typeof isi === 'string') el.textContent = isi;
+    else isi.forEach(n => el.appendChild(n));
+  }
+
   document.getElementById('btn-verify-lis').addEventListener('click', async () => {
     const apiKey = document.getElementById('f-lis-api-key').value.trim();
-    const resultEl = document.getElementById('verify-result');
-    const instId = window.editingInstrumentId || 1;
-
-    resultEl.replaceChildren();
-    resultEl.classList.remove('hidden');
 
     if (!apiKey) {
-      resultEl.style.background = '#fee';
-      resultEl.style.color = '#900';
-      resultEl.textContent = 'Isi LIS API Key dulu sebelum verify.';
+      tampilVerify('danger', 'Isi LIS API Key dulu sebelum verify.');
       return;
     }
-    resultEl.style.background = '#ffd';
-    resultEl.style.color = '#660';
-    resultEl.textContent = 'Verifying...';
+    // Verify menembak endpoint per-instrument, jadi alat harus sudah tersimpan.
+    // Sebelumnya fallback ke id 1 — memverifikasi alat yang salah.
+    const instId = window.editingInstrumentId;
+    if (!instId) {
+      tampilVerify('warning',
+        'Simpan instrument ini dulu, lalu buka Edit untuk verify API key-nya.');
+      return;
+    }
+
+    tampilVerify('info', 'Verifying...');
 
     try {
       const data = await App.api(`/api/instruments/${instId}/verify-lis`, {
         method: 'POST',
         body: { lis_api_key: apiKey },
       });
-      resultEl.replaceChildren();
       if (data.success) {
-        resultEl.style.background = '#efe';
-        resultEl.style.color = '#060';
         const okText = document.createElement('span');
         okText.textContent = `OK: ${data.name || ''} (${data.vendor || ''} ${data.model || ''}) — ID: `;
         const idStrong = document.createElement('strong');
         idStrong.textContent = data.lis_instrument_id || '(none)';
-        resultEl.appendChild(okText);
-        resultEl.appendChild(idStrong);
+        tampilVerify('success', [okText, idStrong]);
         document.getElementById('f-lis-instrument-id').value = data.lis_instrument_id || '';
       } else {
-        resultEl.style.background = '#fee';
-        resultEl.style.color = '#900';
-        resultEl.textContent = `Gagal: ${data.error || 'unknown error'}`;
+        tampilVerify('danger', `Gagal: ${data.error || 'unknown error'}`);
       }
     } catch (e) {
-      resultEl.style.background = '#fee';
-      resultEl.style.color = '#900';
-      resultEl.textContent = `Error: ${e.message}`;
+      tampilVerify('danger', `Error: ${e.message}`);
     }
   });
 
