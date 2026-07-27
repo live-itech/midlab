@@ -72,17 +72,16 @@ cd /opt/midlab
 sudo bash scripts/install.sh
 ```
 
-> **Penting — installer belum menjalankan semua migrasi.** `install.sh` hanya
-> memanggil `migrate_lis_api.py`. Tabel `tbl_tap_session` (fitur Tapping Data)
-> **tidak** ikut dibuat, dan tanpa tabel itu halaman `/tap` serta endpoint
-> `/api/tap/*` akan error. Jalankan manual sekali setelah install:
->
-> ```bash
-> sudo -u midlab /opt/midlab/.venv/bin/python /opt/midlab/scripts/migrate_tap_session.py
-> ```
->
-> Skrip migrasi di repo ini semuanya **idempotent** — aman diulang, ia cek
-> `INFORMATION_SCHEMA` dulu dan mencetak "sudah ada" bila tidak ada perubahan.
+Bagaimana tabel dibuat: installer memanggil `Base.metadata.create_all()`, yang
+membuat **semua** tabel yang belum ada dari model ORM di `lib/db.py` — termasuk
+`tbl_tap_session`. Setelah itu barulah `migrate_lis_api.py` dijalankan untuk
+kolom tambahan pada tabel yang sudah ada.
+
+> **Catatan:** `create_all()` hanya membuat tabel yang **belum ada** — ia tidak
+> pernah meng-`ALTER` tabel lama. Perubahan kolom pada tabel yang sudah berisi
+> data selalu lewat skrip di `scripts/migrate_*`. Semua skrip migrasi di repo
+> ini **idempotent**: ia cek `INFORMATION_SCHEMA` dulu dan mencetak "sudah ada"
+> bila tidak ada yang perlu diubah, jadi aman dijalankan berulang.
 
 Override kredensial DB saat install (opsional):
 ```bash
@@ -179,12 +178,16 @@ Ia **hanya menyalin file kode**.
 | Ambil kode terbaru dari remote | ✅ | ❌ | ❌ |
 | Salin kode → `/opt/midlab` (rsync) | — | ✅ | ❌ |
 | **Install dependency baru ke `.venv`** | ❌ | ❌ | ✅ |
-| **Jalankan migrasi DB** | ❌ | ❌ | sebagian¹ |
+| **Buat tabel baru / jalankan migrasi DB** | ❌ | ❌ | ✅¹ |
 | Pasang/refresh unit systemd | ❌ | ❌ | ✅ |
 | Restart service | ❌ | ✅ | ❌ |
 | Sentuh `config.yaml` / log / `.git` | ❌ | ❌ | hanya bila belum ada |
 
-¹ Hanya `migrate_lis_api.py`. `migrate_tap_session.py` harus dijalankan manual — lihat §3.
+¹ `create_all()` untuk tabel baru + `migrate_lis_api.py` untuk perubahan kolom. Lihat §3.
+
+**Jalur `git pull` + `deploy.sh` saja tidak menyentuh database sama sekali.**
+Kalau update membawa tabel baru, jalankan skrip migrasinya (langkah 3 di bawah)
+atau cukup ulangi `install.sh` — keduanya idempotent.
 
 **Kalau update membawa dependency baru dan kamu hanya `git pull` + `deploy.sh`,
 paket itu tidak akan terpasang.** Gejalanya menyesatkan: service tetap start
@@ -268,7 +271,8 @@ belum didukung. Tidak wajib untuk operasi normal — lewati bila tidak dipakai.
 
 **Prasyarat:**
 
-1. **Tabel DB** — `tbl_tap_session` (lihat §3, tidak dibuat installer)
+1. **Tabel DB** — `tbl_tap_session`. Sudah dibuat `install.sh`; bila server hanya
+   di-update lewat `deploy.sh`, jalankan `scripts/migrate_tap_session.py`
 2. **`pyserial`** — sudah di `requirements.txt`; pastikan benar-benar terpasang:
    ```bash
    /opt/midlab/.venv/bin/python -c "import serial; print(serial.__version__)"

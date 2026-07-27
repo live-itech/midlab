@@ -162,7 +162,7 @@ via TCP Socket + REST API.
     ├── install.sh                     # Setup user, dirs, permissions, deps, systemd
     ├── deploy.sh                      # rsync repo → /opt/midlab + restart (TIDAK sentuh .venv)
     ├── migrate_lis_api.py             # Migrasi kolom LIS di tbl_instrument (idempotent)
-    ├── migrate_tap_session.py         # Buat tbl_tap_session (idempotent) — tidak dipanggil install.sh
+    ├── migrate_tap_session.py         # Buat tbl_tap_session (idempotent) — untuk jalur deploy.sh
     └── *_test_sender.py               # Simulator alat untuk uji driver tanpa hardware
 ```
 

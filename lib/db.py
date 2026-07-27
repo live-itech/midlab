@@ -27,6 +27,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Index,
 )
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
@@ -222,6 +223,16 @@ class TblTapSession(Base):
     error_message  = Column(Text, nullable=True)
     started_at     = Column(DateTime, default=now_naive)
     stopped_at     = Column(DateTime, nullable=True)
+
+    # Nama index disamakan persis dengan DDL di scripts/migrate_tap_session.py.
+    # Tabel ini bisa lahir lewat dua jalur: create_all() saat install.sh, atau
+    # skrip migrasi saat update via deploy.sh. Tanpa deklarasi di sini, server
+    # yang diinstall lewat install.sh dapat tabel TANPA index — dan skrip
+    # migrasi tidak bisa menambalnya karena ia no-op begitu tabelnya ada.
+    __table_args__ = (
+        Index("idx_status", "status"),
+        Index("idx_started", "started_at"),
+    )
 
 
 # ============================================================
