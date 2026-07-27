@@ -407,6 +407,18 @@ class ResultReceiver:
             # Parse menggunakan protocol module
             result_dict = self._protocol.parse(raw_bytes, instrument_dict)
 
+            # Protocol module boleh menyediakan should_store_result() untuk
+            # menolak pesan yang bukan hasil. Dipakai driver yang alatnya
+            # mengirim beberapa jenis pesan lewat koneksi yang sama — mis.
+            # HL7_MINDRAY_BC5150 yang menyelipkan ORM^O01 (permintaan order)
+            # di antara ORU^R01. Default: simpan, jadi driver lain tak berubah.
+            should_store = getattr(self._protocol, "should_store_result", None)
+            if should_store is not None and not should_store(result_dict, raw_bytes):
+                self._logger.info(
+                    f"[{self._inst_name}] Pesan bukan hasil — tidak disimpan"
+                )
+                return
+
             # Simpan ke database
             raw_hex = raw_bytes.hex()
             result_id = await asyncio.get_event_loop().run_in_executor(
