@@ -16,9 +16,11 @@ Direktori: `/opt/midlab/` | Log: `/var/log/midlab/` | Config: `/etc/midlab/confi
 ```
 /opt/midlab/
 ├── services/tcp_socket/      # TCPSocketService (1 instance per alat)
-├── services/result_sender/   # ResultSenderService
-├── services/order_receiver/  # OrderReceiverService
+├── services/lis_bridge/      # LisBridgeService (1 instance per alat, EazyApp)
+├── services/result_sender/   # ResultSenderService (legacy)
+├── services/order_receiver/  # OrderReceiverService (legacy)
 ├── services/web_console/     # WebConsoleService + Watchdog
+├── services/tap/             # TapService — rekam raw alat (bikin driver baru)
 ├── protocols/base.py         # BaseProtocolModule
 ├── protocols/astm/           # ASTMModule
 ├── protocols/hl7/            # HL7Module
@@ -37,6 +39,7 @@ Direktori: `/opt/midlab/` | Log: `/var/log/midlab/` | Config: `/etc/midlab/confi
 | OrderReceiverService | Terima order dari LIS via REST API → simpan tbl_order status=pending (legacy) | order_receiver.log |
 | LisBridgeService | Per-alat: pull /orders/pending → tbl_order, push tbl_result → /results, drain tbl_lis_event_queue → /status, push WARN/ERROR log → /logs (EazyApp) | lis_bridge_<id>.log |
 | WebConsoleService | Dashboard UI, watchdog start/stop/restart service, CRUD alat, log viewer | webconsole.log |
+| TapService | Rekam komunikasi mentah alat (belum ada driver) → JSONL + export fixture. Tidak masuk tbl_result, tidak dikirim ke LIS. On-demand, bukan unit systemd | tap_recorder.log |
 
 **Hardware:** RS232 alat → RS232-to-LAN converter → switch → server (TCP)
 **Hardware:** Ethernet alat → switch → server (TCP langsung)
@@ -64,6 +67,14 @@ tbl_service_log: id, service, level(INFO|WARNING|ERROR), message, logged_at
 tbl_lis_event_queue: id, instrument_id, event_type(status|log), payload_json,
                      send_status(pending|sent|failed|skipped), retry_count,
                      error_message, created_at, sent_at
+
+tbl_tap_session: id, name, transport(tcp_server|tcp_client|serial), target,
+                 protocol_basis(ASTM|HL7|RAW|AUTO), detected_protocol,
+                 response_mode(uni|bidi), status(running|stopped|error),
+                 bytes_rx, bytes_tx, message_count, error_message,
+                 started_at, stopped_at
+                 -- METADATA saja; aliran byte di /var/log/midlab/tap/<id>.jsonl
+                 -- (raw_data TEXT batas 64KB, capture bisa jauh lebih besar)
 ```
 
 **Flag ownership:**
@@ -177,3 +188,4 @@ broadcast+query:      ResultReceiver + BroadcastWorker + QueryHandler + shared L
 7. `services/result_sender/` → ResultSenderService (legacy, fallback untuk alat non-EazyApp)
 8. `services/order_receiver/` → OrderReceiverService (legacy)
 9. `services/web_console/` → Backend API + Frontend UI
+10. `services/tap/` → TapService: Responder + Transport + Recorder + Export (alat baru yang belum punya driver → fixture test → driver)

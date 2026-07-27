@@ -103,32 +103,71 @@ via TCP Socket + REST API.
 │   │   ├── main.py                    #  54 lines — Entry point (uvicorn)
 │   │   └── api.py                     # 260 lines — FastAPI endpoint POST /api/orders
 │   │
+│   ├── lis_bridge/                    # LisBridgeService — bridge per-alat ke EazyApp
+│   │   ├── __init__.py
+│   │   ├── main.py                    #  46 lines — Entry point (--instrument-id N)
+│   │   ├── service.py                 # 212 lines — Orchestrator: spawn 4 worker di bawah
+│   │   ├── result_pusher.py           # 196 lines — tbl_result pending → POST /results
+│   │   ├── order_puller.py            #  74 lines — GET /orders/pending → tbl_order
+│   │   ├── status_reporter.py         #  81 lines — drain tbl_lis_event_queue → /status
+│   │   └── log_pusher.py              #  97 lines — push log WARN/ERROR → /logs
+│   │
+│   ├── tap/                           # TapService — rekam komunikasi mentah alat
+│   │   ├── __init__.py                #         Dipakai saat membuat driver baru.
+│   │   ├── service.py                 # 195 lines — Entry point + CLI + guard port bentrok
+│   │   ├── session.py                 # 125 lines — Wiring: rekam DULU, baru balas
+│   │   ├── recorder.py                # 127 lines — JSONL hex, flush per event
+│   │   ├── detect.py                  # 116 lines — Tebak protokol + hint baud + factory
+│   │   ├── export.py                  #  83 lines — Export .bin + literal Python untuk fixture
+│   │   ├── responder/                 # Balasan minimal agar alat mau lanjut kirim
+│   │   │   ├── base.py                #  37 lines — Kontrak BaseResponder
+│   │   │   ├── raw.py                 #  21 lines — Pasif, tidak pernah membalas
+│   │   │   ├── astm.py                #  83 lines — ENQ/frame ACK
+│   │   │   └── mllp.py                #  71 lines — ACK HL7 dengan echo MSH-10
+│   │   └── transport/
+│   │       ├── base.py                #  49 lines — Kontrak async transport
+│   │       ├── tcp.py                 # 114 lines — TCP server & client
+│   │       └── serial_port.py         # 105 lines — RS232 via pyserial (butuh grup dialout)
+│   │
 │   └── web_console/                   # WebConsoleService — dashboard + watchdog
 │       ├── __init__.py
 │       ├── main.py                    #  59 lines — Entry point (uvicorn)
-│       ├── api.py                     # 969 lines — REST API + page routes (Jinja2)
-│       ├── watchdog.py                # 519 lines — ServiceWatchdog: start/stop/restart subprocess
+│       ├── api.py                     # 1805 lines — REST API + page routes (Jinja2)
+│       ├── watchdog.py                #  583 lines — ServiceWatchdog: start/stop/restart subprocess
 │       ├── static/
-│       │   ├── css/style.css          # 1098 lines — Dark/light theme, semua komponen
-│       │   └── js/app.js             #  383 lines — Fetch wrapper, SSE, toast, modal, helpers
+│       │   ├── css/style.css          # 1244 lines — Dark/light theme, semua komponen
+│       │   └── js/app.js              #  661 lines — Fetch wrapper, SSE, toast, modal, validasi
 │       └── templates/
-│           ├── base.html              #   88 lines — Layout: sidebar, topbar, theme toggle
-│           ├── dashboard.html         #  184 lines — Service cards, summary stats, alerts
-│           ├── instruments.html       #  291 lines — CRUD tabel + modal add/edit
-│           ├── services.html          #  114 lines — Tabel service + auto-restart toggle
+│           ├── base.html              #  107 lines — Layout: sidebar, topbar, theme toggle
+│           ├── dashboard.html         #  260 lines — Service cards, summary stats, alerts
+│           ├── instruments.html       #  458 lines — CRUD tabel + modal add/edit + verify LIS
+│           ├── services.html          #  171 lines — Tabel service + auto-restart toggle
+│           ├── protocols.html         #  133 lines — Daftar modul + hot-swap protocol
 │           ├── logs.html              #  161 lines — Live SSE / histori + filter
 │           ├── results.html           #  168 lines — Tabel result + pagination + retry
-│           └── orders.html            #  181 lines — Tabel order + pagination + retry/cancel
+│           ├── orders.html            #  181 lines — Tabel order + pagination + retry/cancel
+│           ├── lis_events.html        #  167 lines — Monitor tbl_lis_event_queue
+│           ├── settings.html          #  268 lines — Konfigurasi runtime
+│           ├── tap.html               #  151 lines — Tapping: stream hex/ASCII + export
+│           └── api_docs.html          #  306 lines — Dokumentasi API internal
 │
 ├── systemd/                           # Systemd unit files
 │   ├── midlab-web-console.service     # Web Console (port 8000)
-│   ├── midlab-result-sender.service   # Result Sender
-│   ├── midlab-order-receiver.service  # Order Receiver (port 8001)
-│   └── midlab-tcp@.service            # Template: midlab-tcp@{instrument_id}.service
+│   ├── midlab-result-sender.service   # Result Sender (legacy)
+│   ├── midlab-order-receiver.service  # Order Receiver (legacy, port 8001)
+│   ├── midlab-tcp@.service            # Template: midlab-tcp@{instrument_id}.service
+│   └── midlab-lis-bridge@.service     # Template: midlab-lis-bridge@{instrument_id}.service
 │
 └── scripts/
-    └── install.sh                     # Setup user, dirs, permissions, deps, systemd
+    ├── install.sh                     # Setup user, dirs, permissions, deps, systemd
+    ├── deploy.sh                      # rsync repo → /opt/midlab + restart (TIDAK sentuh .venv)
+    ├── migrate_lis_api.py             # Migrasi kolom LIS di tbl_instrument (idempotent)
+    ├── migrate_tap_session.py         # Buat tbl_tap_session (idempotent) — tidak dipanggil install.sh
+    └── *_test_sender.py               # Simulator alat untuk uji driver tanpa hardware
 ```
+
+> **TapService tidak punya unit systemd.** Ia dijalankan on-demand oleh web
+> console saat sesi tapping dibuat, lalu berhenti sendiri. Lihat INSTALL.md §9.
 
 ---
 
