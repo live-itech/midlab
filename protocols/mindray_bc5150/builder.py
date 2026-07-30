@@ -34,8 +34,16 @@ from protocols.mindray_bc5150.constants import (
     ACK_AA, STATUS_CODE_OK,
     ORR_ACK_FOUND, ORR_ACK_NOT_FOUND,
     EVENT_ORR_O02, EVENT_ACK_R01,
-    ORC_NEW_ORDER, ORC_STATUS_IN_PROCESS,
-    CODING_MINDRAY,
+    ORC_AFFIRM,
+    ESCAPE_SEQUENCES,
+    SERVICE_AUTOMATED_COUNT, DIAGNOSTIC_SERV_HEMATOLOGY,
+    OBR_FIELD_PLACER_SAMPLE_ID, OBR_FIELD_SERVICE_ID, OBR_FIELD_DRAW_TIME,
+    OBR_FIELD_SENDER, OBR_FIELD_CLINICAL_INFO, OBR_FIELD_RECEIVED_TIME,
+    OBR_FIELD_SERVICE_SECTION, OBR_FIELD_INTERPRETER, OBR_FIELD_COUNT,
+    OBX_CODE_BLOOD_MODE, OBX_CODE_TEST_MODE, OBX_CODE_AGE, OBX_CODE_REMARK,
+    BLOOD_MODE_BY_SAMPLE_TYPE, VALID_TEST_MODES, AGE_UNIT_YEAR,
+    VALUE_TYPE_CODED, VALUE_TYPE_NUMERIC, VALUE_TYPE_STRING,
+    OBSERVATION_STATUS_FINAL,
 )
 
 
@@ -56,6 +64,61 @@ def to_hl7_timestamp(value: str, pad: bool = True) -> str:
     if pad and len(digits) < 14:
         digits = digits.ljust(14, "0")
     return digits
+
+
+def escape(value: str) -> str:
+    """
+    Ganti delimiter di dalam teks bebas dengan escape sequence HL7 (dok §3).
+
+    Wajib untuk setiap nilai yang berasal dari LIS — nama pasien, remark,
+    diagnosa. Satu `|` yang lolos akan memecah segment dan menggeser seluruh
+    pemetaan field sesudahnya, dan alat akan membaca order yang salah.
+    """
+    if not value:
+        return ""
+    text = str(value)
+    for original, sequence in ESCAPE_SEQUENCES:
+        text = text.replace(original, sequence)
+    return text
+
+
+def _padded_segment(name: str, assignments: dict, field_count: int) -> str:
+    """
+    Rakit segment dengan field kosong dipertahankan sampai `field_count`.
+
+    Dipakai OBR pada ORR^O02: dok §5.5 menempatkan nilai di OBR-2, OBR-4,
+    OBR-6, OBR-10, OBR-14, OBR-24 dan OBR-32, jadi field kosong di antaranya
+    tidak boleh dipangkas — posisi field-lah yang memberi arti.
+    """
+    fields = [""] * (field_count + 1)
+    fields[0] = name
+    for index, value in assignments.items():
+        fields[index] = value or ""
+    return FIELD_SEPARATOR.join(fields)
+
+
+def age_in_years(dob: str, today: str) -> str:
+    """
+    Hitung umur penuh dalam tahun dari `dob` terhadap tanggal `today`.
+
+    Dua-duanya `YYYYMMDD...`; string kosong bila dob tidak bisa dibaca. Umur
+    dikirim karena BC-5150 memakainya untuk memilih reference group — hasil
+    pasien anak akan dinilai terhadap range dewasa bila field ini kosong.
+    """
+    dob_digits = to_hl7_timestamp(dob, pad=False)
+    if len(dob_digits) < 8 or len(today) < 8:
+        return ""
+
+    try:
+        born = (int(dob_digits[0:4]), int(dob_digits[4:6]), int(dob_digits[6:8]))
+        now = (int(today[0:4]), int(today[4:6]), int(today[6:8]))
+    except ValueError:
+        return ""
+
+    years = now[0] - born[0] - ((now[1], now[2]) < (born[1], born[2]))
+    if years < 0 or years > 150:
+        return ""
+    return str(years)
 
 
 class MindrayBC5150Builder:
@@ -89,13 +152,18 @@ class MindrayBC5150Builder:
         )
 
     def _build_msh(self, event: str, control_id: str,
-                   sending_app: str, sending_facility: str) -> str:
+                   sending_app: str, sending_facility: str,
+                   processing_id: str = PROC_PRODUCTION) -> str:
         """
         Bangun MSH arah LIS → alat.
 
         Alat mengosongkan MSH-3..MSH-6 pada pesannya, dan driver lama tidak
         mengisi MSH-5/MSH-6 pada balasan — pola itu dipertahankan. MSH-7 memakai
         jam lab saat pesan dibuat.
+
+        MSH-11 memantulkan processing ID pesan yang dibalas: dok Tabel 4-1
+        menyatakan balasan harus konsisten dengan pesan sebelumnya, dan dok §5.4
+        menegaskan balasan hasil QC memakai `Q` — bukan `P`.
         """
         fields = [
             "MSH",
@@ -108,12 +176,17 @@ class MindrayBC5150Builder:
             "",                    # MSH-8  Security
             event,                 # MSH-9
             control_id,            # MSH-10
-            PROC_PRODUCTION,       # MSH-11
+            processing_id,         # MSH-11
             HL7_VERSION,           # MSH-12
             "", "", "", "", "",    # MSH-13..17
             CHARACTER_SET,         # MSH-18
         ]
         return FIELD_SEPARATOR.join(fields)
+
+    @staticmethod
+    def _processing_id(context: dict) -> str:
+        """Processing ID pesan alat, jatuh ke `P` bila alat tidak mengirimnya."""
+        return (context or {}).get("processing_id") or PROC_PRODUCTION
 
     # ============================================================
     # ACK^R01 — balasan hasil
@@ -137,6 +210,7 @@ class MindrayBC5150Builder:
             self._build_msh(
                 EVENT_ACK_R01, control_id,
                 ACK_SENDING_APP, ACK_SENDING_FACILITY,
+                processing_id=self._processing_id(context),
             ),
             FIELD_SEPARATOR.join(
                 ["MSA", ACK_AA, control_id, "", "", "", STATUS_CODE_OK, ""]
@@ -164,6 +238,7 @@ class MindrayBC5150Builder:
             self._build_msh(
                 EVENT_ORR_O02, control_id,
                 ORR_SENDING_APP, ORR_SENDING_FACILITY,
+                processing_id=self._processing_id(context),
             ),
             FIELD_SEPARATOR.join(["MSA", ORR_ACK_NOT_FOUND, control_id]),
         ]
@@ -172,13 +247,35 @@ class MindrayBC5150Builder:
 
     def build_orr_with_order(self, order: dict, context: dict) -> bytes:
         """
-        Bangun ORR^O02 dengan MSA|AA + ORC/OBR berisi order.
+        Bangun ORR^O02 berisi worklist untuk sampel yang ditanyakan alat.
 
-        ⚠️ BELUM TERVERIFIKASI TERHADAP ALAT. Log sumber driver ini seluruhnya
-        unidirectional — MidLab tidak pernah mengirim order, sehingga bentuk
-        pesan di bawah disusun dari struktur ORR^O02 HL7 v2.3.1 dan pola ORM
-        yang dikirim alat, bukan dari byte yang terbukti diterima BC-5150.
-        Uji dengan Tapping Data sebelum dipakai produksi.
+        Bentuknya mengikuti dok §4.2.4 dan contoh dok §5.5:
+
+            MSH   ORR^O02, MSH-11 mengikuti pesan alat
+            MSA   AA + control ID pesan alat
+            PID   identitas pasien
+            PV1   bangsal / bed (hanya bila ada isinya)
+            ORC   AF + sample ID di ORC-2
+            OBR   sample ID di OBR-2, jenis analisis di OBR-4
+            OBX   mode darah, mode pemeriksaan, umur, remark
+
+        Dua aturan dok yang kalau dilanggar membuat alat menolak pesan:
+
+        1. ORC-1 harus `AF` ("affirm the re-filled order"), bukan `NW`, dan
+           sample ID pindah ke ORC-2 — pada ORM dari alat ia ada di ORC-3.
+        2. "the OBR-2 field indicates the sample ID, which should be the same
+           value as in the ORC-2 field; Otherwise, the message will be regarded
+           as incorrect" (dok §5.5). Jadi sample ID ditulis di OBR-2, dan
+           OBR-3 justru dibiarkan kosong.
+
+        Alat hematologi tidak menerima daftar test code seperti alat kimia:
+        yang bisa diperintahkan lewat worklist adalah cara sampel dijalankan
+        (Blood Mode / Test Mode) plus konteks pasien. `order["tests"]` karena
+        itu dipakai untuk menentukan Test Mode, bukan dipetakan satu-satu.
+
+        ⚠️ Belum diverifikasi terhadap alat fisik — log sumber driver ini
+        seluruhnya unidirectional. Bentuk di atas sesuai dok vendor; rekam
+        sesi Tapping Data saat pertama kali dipakai di lapangan.
 
         Args:
             order: OrderObject dari tbl_order.order_json
@@ -190,7 +287,6 @@ class MindrayBC5150Builder:
         order = order or {}
         specimen = order.get("specimen") or {}
         patient = order.get("patient") or {}
-        tests = order.get("tests") or []
 
         sample_id = (
             specimen.get("sample_id")
@@ -202,46 +298,160 @@ class MindrayBC5150Builder:
             self._build_msh(
                 EVENT_ORR_O02, control_id,
                 ORR_SENDING_APP, ORR_SENDING_FACILITY,
+                processing_id=self._processing_id(context),
             ),
             FIELD_SEPARATOR.join(["MSA", ORR_ACK_FOUND, control_id]),
-            FIELD_SEPARATOR.join([
-                "PID",
-                "1",
-                "",
-                f"{patient.get('patient_id', '')}{'^^^^MR'}",
-                "",
-                patient.get("name", ""),
-                "",
-                to_hl7_timestamp(patient.get("dob", "")),
-                patient.get("gender", ""),
-            ]),
+            self._build_pid(patient),
         ]
 
-        # Satu pasang ORC+OBR per tes yang diminta.
-        for idx, test in enumerate(tests, start=1):
-            test_code = test.get("test_code", "")
-            test_name = test.get("test_name", "")
-            segments.append(FIELD_SEPARATOR.join([
-                "ORC", ORC_NEW_ORDER, "", sample_id, "", ORC_STATUS_IN_PROCESS,
-            ]))
-            segments.append(FIELD_SEPARATOR.join([
-                "OBR",
-                str(idx),
-                "",
-                sample_id,
-                f"{test_code}^{test_name}^{CODING_MINDRAY}",
-            ]))
+        pv1 = self._build_pv1(order)
+        if pv1:
+            segments.append(pv1)
 
-        if not tests:
-            segments.append(FIELD_SEPARATOR.join([
-                "ORC", ORC_NEW_ORDER, "", sample_id, "", ORC_STATUS_IN_PROCESS,
-            ]))
+        # ORC-2 = sample ID (dok Tabel 4-8). ORC-3 dan ORC-5 dikosongkan —
+        # keduanya hanya terisi pada arah ORM.
+        segments.append(FIELD_SEPARATOR.join(["ORC", ORC_AFFIRM, sample_id]))
+        segments.append(self._build_obr(order, sample_id))
+        segments.extend(self._build_order_obx(order, patient))
 
         logger.info(
             f"ORR^O02 (MSA|AA) dibangun untuk sample_id={sample_id or '-'}, "
-            f"{len(tests)} tes — format belum terverifikasi terhadap alat"
+            f"control_id={control_id}"
         )
         return self._wrap_mllp(segments)
+
+    # ------------------------------------------------------------
+    # Segment ORR^O02
+    # ------------------------------------------------------------
+
+    def _build_pid(self, patient: dict) -> str:
+        """
+        PID untuk worklist — dok §4.3.3, contoh `PID|1||test1^^^^MR||^Tom||...`
+
+        PID-3 memakai sufiks `^^^^MR` (identifier type code) persis seperti
+        pesan alat, supaya alat mengenali nilainya sebagai patient ID.
+        """
+        patient = patient or {}
+        patient_id = escape(patient.get("patient_id", ""))
+        return FIELD_SEPARATOR.join([
+            "PID",
+            "1",                                          # PID-1
+            "",                                           # PID-2
+            f"{patient_id}^^^^MR" if patient_id else "",  # PID-3
+            "",                                           # PID-4
+            escape(patient.get("name", "")),              # PID-5
+            "",                                           # PID-6
+            to_hl7_timestamp(patient.get("dob", "")),     # PID-7
+            escape(patient.get("gender", "")),            # PID-8
+        ])
+
+    def _build_pv1(self, order: dict) -> str:
+        """
+        PV1 untuk worklist — dok §4.3.4, `PV1|1||ICU^^BedNO1`.
+
+        OrderObject MidLab tidak punya field bangsal/bed baku, jadi PV1 hanya
+        dibangun bila LIS menyertakannya lewat key opsional `visit`. Tanpa itu
+        segment ini dilewati — mengirim `PV1|1` kosong tidak menambah apa pun.
+        """
+        visit = (order or {}).get("visit") or {}
+        if not isinstance(visit, dict):
+            return ""
+
+        point_of_care = escape(visit.get("point_of_care", ""))
+        room = escape(visit.get("room", ""))
+        bed = escape(visit.get("bed", ""))
+        if not any((point_of_care, room, bed)):
+            return ""
+
+        location = f"{point_of_care}^{room}^{bed}".rstrip("^")
+        return FIELD_SEPARATOR.join(["PV1", "1", "", location])
+
+    def _build_obr(self, order: dict, sample_id: str) -> str:
+        """
+        OBR untuk worklist — sample ID di OBR-2 (dok §5.5), bukan OBR-3.
+
+        Field kosong di antara nilai dipertahankan sampai OBR-32 karena arti
+        setiap nilai ditentukan posisinya.
+        """
+        order = order or {}
+        specimen = order.get("specimen") or {}
+
+        return _padded_segment("OBR", {
+            1: "1",
+            OBR_FIELD_PLACER_SAMPLE_ID: sample_id,
+            OBR_FIELD_SERVICE_ID: SERVICE_AUTOMATED_COUNT,
+            OBR_FIELD_DRAW_TIME: to_hl7_timestamp(specimen.get("collected_at", "")),
+            OBR_FIELD_SENDER: escape(order.get("sender", "")),
+            OBR_FIELD_CLINICAL_INFO: escape(order.get("clinical_info", "")),
+            OBR_FIELD_RECEIVED_TIME: to_hl7_timestamp(
+                order.get("request_datetime", "")
+            ),
+            OBR_FIELD_SERVICE_SECTION: DIAGNOSTIC_SERV_HEMATOLOGY,
+            OBR_FIELD_INTERPRETER: escape(order.get("operator", "")),
+        }, OBR_FIELD_COUNT)
+
+    def _build_order_obx(self, order: dict, patient: dict) -> list:
+        """
+        OBX worklist: Blood Mode, Test Mode, Age, Remark (dok §5.5).
+
+        Setiap OBX hanya dibangun bila datanya benar-benar ada. Mengirim OBX
+        kosong berisiko: alat akan membaca string kosong sebagai perintah mode
+        dan menolak sampel, padahal tanpa OBX ia cukup memakai setelan sendiri.
+        """
+        order = order or {}
+        specimen = order.get("specimen") or {}
+        entries = []
+
+        blood_mode = BLOOD_MODE_BY_SAMPLE_TYPE.get(
+            (specimen.get("sample_type") or "").strip().lower()
+        )
+        if blood_mode:
+            entries.append((VALUE_TYPE_CODED, OBX_CODE_BLOOD_MODE, blood_mode, ""))
+
+        test_mode = self._test_mode(order)
+        if test_mode:
+            entries.append((VALUE_TYPE_CODED, OBX_CODE_TEST_MODE, test_mode, ""))
+
+        age = age_in_years((patient or {}).get("dob", ""), self._now())
+        if age:
+            entries.append((VALUE_TYPE_NUMERIC, OBX_CODE_AGE, age, AGE_UNIT_YEAR))
+
+        remark = order.get("remark", "")
+        if remark:
+            entries.append((VALUE_TYPE_STRING, OBX_CODE_REMARK, escape(remark), ""))
+
+        segments = []
+        for idx, (value_type, identifier, value, unit) in enumerate(entries, start=1):
+            segments.append(FIELD_SEPARATOR.join([
+                "OBX",
+                str(idx),                  # OBX-1
+                value_type,                # OBX-2
+                identifier,                # OBX-3
+                "",                        # OBX-4
+                value,                     # OBX-5
+                unit,                      # OBX-6
+                "", "", "", "",            # OBX-7..10
+                OBSERVATION_STATUS_FINAL,  # OBX-11
+            ]))
+        return segments
+
+    @staticmethod
+    def _test_mode(order: dict) -> str:
+        """
+        Tentukan Test Mode dari daftar tes yang di-order.
+
+        LIS mengirim tes sebagai `test_code`/`test_name`; yang relevan untuk
+        alat hematologi hanya apakah panel yang diminta CBC saja atau CBC
+        dengan hitung jenis. Bila tidak ada yang cocok dengan enumerasi dok,
+        Test Mode tidak dikirim dan alat memakai setelan defaultnya sendiri —
+        lebih aman daripada menebak.
+        """
+        for test in (order or {}).get("tests") or []:
+            for candidate in (test.get("test_code", ""), test.get("test_name", "")):
+                normalized = (candidate or "").strip().upper().replace(" ", "")
+                if normalized in VALID_TEST_MODES:
+                    return normalized
+        return ""
 
 
 def _now_timestamp() -> str:

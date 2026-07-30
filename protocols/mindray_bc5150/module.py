@@ -2,7 +2,9 @@
 protocols/mindray_bc5150/module.py — Protocol Module Mindray BC-5150
 
 Implementasi BaseProtocolModule untuk Mindray BC-5150 Auto Hematology Analyzer
-(HL7 v2.3.1 + MLLP). Disusun dari log komunikasi riil alat, bukan manual vendor.
+(HL7 v2.3.1 + MLLP). Dua sumber: log komunikasi riil alat untuk jalur
+unidirectional, dan manual vendor *BC-5000 & BC-5150 HL7 Communication
+Protocol V2.0 EN* untuk jalur worklist/bidirectional.
 
 Alur yang terekam di log — dua pesan per sampel, berjarak ~60 detik:
 
@@ -13,13 +15,16 @@ Alur yang terekam di log — dua pesan per sampel, berjarak ~60 detik:
 
 Mode yang didukung:
 
-- unidirectional — TERVERIFIKASI dari log. ORM dibalas ORR^O02/MSA|AR dan tidak
+- unidirectional — TERVERIFIKASI dari log. ORM dibalas ORR^O02/MSA|AR oleh
+                   ResultReceiver (lihat ANSWERS_QUERY_IN_ACK) dan tidak
                    disimpan ke tbl_result; ORU diparse jadi ResultObject lalu
                    dibalas ACK^R01.
-- bidirectional  — BELUM TERVERIFIKASI. Alat selalu menjadi inisiator (mode
-                   `query`), tapi bentuk ORR^O02 yang membawa order disusun dari
-                   struktur HL7 v2.3.1, bukan dari byte yang terbukti diterima
-                   alat. Lihat catatan di is_enq() dan builder.build_orr_with_order().
+- query          — SESUAI DOK, belum diuji ke alat fisik. Alat selalu jadi
+                   inisiator lewat ORM^O01; QueryHandler mencari order di
+                   tbl_order lalu membalas ORR^O02 berisi worklist sesuai
+                   dok §4.2.4 dan contoh dok §5.5. Set `bidir_mode=query`.
+- broadcast      — TIDAK BERLAKU. Alat tidak menerima order yang tidak ia
+                   minta; lihat format_order().
 
 Di-load dynamic via protocols.base.load_module("HL7_MINDRAY_BC5150").
 """
@@ -47,6 +52,12 @@ class MindrayBC5150Module(BaseProtocolModule):
     # Alat tidak mengirim ACK atas balasan "order tidak ada" (ia langsung
     # lanjut mengirim hasil), jadi QueryHandler tidak boleh menunggu.
     ACK_EXPECTED_ON_NOT_FOUND = False
+
+    # build_ack_response() sudah tahu cara membalas ORM^O01 (dengan
+    # ORR^O02/MSA|AR). Dengan flag ini ResultReceiver membalas sendiri saat
+    # instrumen dijalankan unidirectional — tanpa QueryHandler, ORM tetap
+    # terjawab persis seperti driver lama di log.
+    ANSWERS_QUERY_IN_ACK = True
 
     def __init__(self):
         self._parser = MindrayBC5150Parser()
@@ -162,7 +173,9 @@ class MindrayBC5150Module(BaseProtocolModule):
                     if obr["service_section"] == DIAGNOSTIC_SERV_HEMATOLOGY
                     else ""
                 ),
-                collected_at=obr["observation_datetime"],
+                # OBR-6 (waktu darah diambil) bila alat mengisinya, kalau tidak
+                # jatuh ke OBR-7 (waktu periksa) seperti pesan di log.
+                collected_at=obr["collected_at"],
             )
             result.order = OrderInfo(
                 order_id=obr["sample_id"],
@@ -277,31 +290,37 @@ class MindrayBC5150Module(BaseProtocolModule):
 
     def is_enq(self, raw_bytes: bytes) -> bool:
         """
-        Deteksi trigger query dari alat.
+        Deteksi trigger query dari alat: ORM^O01 (dok §4.1.2).
 
-        Sengaja selalu False. ORM^O01 secara konsep memang query, tapi
-        ResultReceiver memperlakukan is_enq()=True sebagai "serahkan ke
-        QueryHandler dan jangan balas apa pun" — pada mode unidirectional
-        (satu-satunya mode yang terverifikasi untuk alat ini) tidak ada
-        QueryHandler, sehingga ORM tidak akan pernah dibalas.
+        BC-5150 selalu menjadi inisiator — untuk setiap sampel ia bertanya
+        "punya order untuk <sample id>?" lewat ORM^O01, lalu (terlepas dari
+        jawabannya) mengirim hasil sekitar 60 detik kemudian.
 
-        Dengan False, ORM tetap dibalas ORR^O02/MSA|AR lewat
-        build_ack_response() persis seperti driver lama di log, dan
-        should_store_result() mencegahnya masuk tbl_result.
-
-        Untuk memakai alat secara bidirectional, ubah ini menjadi
-        `return self._parser.get_message_type(raw_bytes) in QUERY_EVENTS`
-        dan set `bidir_mode=query` — tapi verifikasi dulu format ORR berisi
-        order lewat Tapping Data (lihat format_query_response()).
+        True di sini hanya berarti "ini query"; yang menentukan siapa yang
+        menjawabnya adalah mode instrumen. ResultReceiver menyerahkannya ke
+        QueryHandler bila `bidir_mode` mengandung `query`, dan pada mode
+        unidirectional membalasnya sendiri lewat build_ack_response() dengan
+        ORR^O02/MSA|AR persis seperti driver lama di log.
         """
-        return False
+        if not raw_bytes:
+            return False
+
+        message_type = self._parser.get_message_type(raw_bytes)
+        is_query = message_type in QUERY_EVENTS
+        if is_query:
+            self._logger.info(f"Query terdeteksi: {message_type}")
+        return is_query
 
     def handle_enq(self, raw_bytes: bytes, instrument: dict) -> dict:
         """
         Ekstrak informasi query dari ORM^O01.
 
         Returns:
-            Dict dengan keys: type, sample_id, patient_id, raw_query
+            Dict dengan keys: type, sample_id, patient_id, raw_query, dan
+            `_msh` berisi konteks pesan alat. QueryHandler meneruskan `_msh`
+            ke format_query_response_full() supaya control ID pesan alat bisa
+            dipantulkan ke MSA-2 — tanpa itu alat tidak bisa mencocokkan
+            balasan dengan pertanyaannya.
         """
         context = self._parser.parse_order_request(raw_bytes)
         sample_id = context.get("sample_id", "")
@@ -313,14 +332,15 @@ class MindrayBC5150Module(BaseProtocolModule):
             "patient_id": "",
             "raw_query": raw_bytes.decode("utf-8", errors="replace"),
             "control_id": context.get("control_id", ""),
+            "_msh": context,
         }
 
     def format_query_response(self, order: dict, instrument: dict) -> bytes:
         """
         Bangun ORR^O02 berisi order untuk sampel yang diminta alat.
 
-        ⚠️ Format belum terverifikasi — log sumber driver ini seluruhnya
-        unidirectional. Rekam sesi Tapping Data saat memakainya pertama kali.
+        Dipakai bila konteks ORM tidak tersedia; control ID lalu dibuat sendiri.
+        Utamakan format_query_response_full() yang memantulkan control ID alat.
         """
         return self._builder.build_orr_with_order(order, {})
 

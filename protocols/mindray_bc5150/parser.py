@@ -29,8 +29,11 @@ from protocols.mindray_bc5150.constants import (
     EMPTY_REFERENCE_RANGE,
     RUN_MODE_CODES,
     ABNORMAL_INDICATORS, FLAG_NORMAL, FLAG_SUSPECT,
+    ESCAPE_SEQUENCES,
     ORC_FIELD_ORDER_CONTROL, ORC_FIELD_SAMPLE_ID, ORC_FIELD_ORDER_STATUS,
     OBR_FIELD_SAMPLE_ID, OBR_FIELD_SERVICE_ID, OBR_FIELD_OBSERVATION_TIME,
+    OBR_FIELD_DRAW_TIME, OBR_FIELD_SENDER, OBR_FIELD_CLINICAL_INFO,
+    OBR_FIELD_RECEIVED_TIME,
     OBR_FIELD_SERVICE_SECTION, OBR_FIELD_INTERPRETER,
 )
 
@@ -56,6 +59,24 @@ def component(value: str, index: int = 0) -> str:
     if 0 <= index < len(parts):
         return parts[index].strip()
     return ""
+
+
+def unescape(value: str) -> str:
+    """
+    Pulihkan escape sequence HL7 (dok §3) menjadi karakter aslinya.
+
+    Kebalikan dari builder.escape(). `\\E\\` dipulihkan paling akhir supaya
+    backslash hasil substitusi tidak ikut dibaca sebagai awal escape lain.
+    """
+    if not value or "\\" not in value:
+        return value
+
+    text = value
+    for original, sequence in reversed(ESCAPE_SEQUENCES):
+        if original == "\\":
+            continue
+        text = text.replace(sequence, original)
+    return text.replace("\\E\\", "\\")
 
 
 def normalize_reference_range(value: str) -> str:
@@ -218,7 +239,7 @@ class MindrayBC5150Parser:
         """
         if not value:
             return ""
-        parts = [p.strip() for p in value.split(COMPONENT_SEP) if p.strip()]
+        parts = [unescape(p.strip()) for p in value.split(COMPONENT_SEP) if p.strip()]
         if not parts:
             return ""
         if len(parts) == 1:
@@ -247,13 +268,32 @@ class MindrayBC5150Parser:
         return parsed
 
     def parse_obr(self, fields: list) -> dict:
-        """Petakan OBR dari pesan ORU^R01."""
+        """
+        Petakan OBR dari pesan ORU^R01.
+
+        Dok Tabel 4-6 membedakan tiga waktu yang mudah tertukar:
+
+            OBR-6   waktu darah diambil dari pasien  → specimen.collected_at
+            OBR-7   waktu alat memeriksa sampel      → waktu hasil
+            OBR-14  waktu order dibuat
+
+        Alat pada log hanya mengisi OBR-7, jadi `collected_at` jatuh kembali ke
+        OBR-7 bila OBR-6 kosong — tapi bila lab mengisi waktu pengambilan,
+        nilai itulah yang dipakai.
+        """
         service_id = field(fields, OBR_FIELD_SERVICE_ID)
+        draw_time = field(fields, OBR_FIELD_DRAW_TIME)
+        observation_time = field(fields, OBR_FIELD_OBSERVATION_TIME)
         parsed = {
             "sample_id": field(fields, OBR_FIELD_SAMPLE_ID),
             "panel_code": component(service_id, 0),
             "panel_name": component(service_id, 1),
-            "observation_datetime": field(fields, OBR_FIELD_OBSERVATION_TIME),
+            "draw_datetime": draw_time,
+            "observation_datetime": observation_time,
+            "collected_at": draw_time or observation_time,
+            "received_datetime": field(fields, OBR_FIELD_RECEIVED_TIME),
+            "sender": field(fields, OBR_FIELD_SENDER),
+            "clinical_info": unescape(field(fields, OBR_FIELD_CLINICAL_INFO)),
             "service_section": field(fields, OBR_FIELD_SERVICE_SECTION),
             "interpreter": field(fields, OBR_FIELD_INTERPRETER),
         }
@@ -262,6 +302,32 @@ class MindrayBC5150Parser:
             f"panel={parsed['panel_name'] or '-'}, "
             f"time={parsed['observation_datetime'] or '-'}"
         )
+        return parsed
+
+    def parse_pv1(self, fields: list) -> dict:
+        """
+        Petakan PV1 (dok §4.3.4).
+
+        PV1-3 memakai tipe PL: `<point of care>^<room>^<bed>`. Contoh dok
+        `PV1|1||ICU^^BedNO1`, contoh pesan sampel `PV1|1|Neike|Hema^^BN1|...`
+        dengan PV1-2 = tipe pasien dan PV1-20 = cara bayar.
+
+        Alat pada log hanya mengirim `PV1|1` (kosong), tapi lab yang mengisi
+        bangsal/bed di alat tidak boleh kehilangan informasi itu.
+        """
+        location = field(fields, 3)
+        parsed = {
+            "patient_type": field(fields, 2),
+            "point_of_care": component(location, 0),
+            "room": component(location, 1),
+            "bed": component(location, 2),
+            "charge_type": field(fields, 20),
+        }
+        if any(parsed.values()):
+            logger.info(
+                f"PV1: poc={parsed['point_of_care'] or '-'}, "
+                f"bed={parsed['bed'] or '-'}"
+            )
         return parsed
 
     def parse_obx(self, fields: list) -> dict:
@@ -282,7 +348,7 @@ class MindrayBC5150Parser:
             "test_code": test_code,
             "test_name": component(identifier, 1),
             "coding_system": component(identifier, 2),
-            "value": field(fields, 5),
+            "value": unescape(field(fields, 5)),
             "unit": field(fields, 6),
             "reference_range": normalize_reference_range(field(fields, 7)),
             "flag": abnormal,

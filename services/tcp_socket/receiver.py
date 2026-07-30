@@ -274,13 +274,31 @@ class ResultReceiver:
 
             # Cek apakah ini query message
             if self._protocol.is_enq(msg):
-                self._logger.info(
-                    f"[{self._inst_name}] Query message terdeteksi"
+                # QueryHandler hanya dibuat bila bidir_mode mengandung `query`.
+                # Bila tidak ada, query yang di-return ke service akan hilang
+                # begitu saja dan alat menunggu sampai timeout. Driver yang
+                # build_ack_response()-nya tahu cara membalas pesan query
+                # alatnya (mis. HL7_MINDRAY_BC5150 yang menjawab ORM^O01
+                # dengan ORR^O02) boleh menandai ANSWERS_QUERY_IN_ACK agar
+                # dibalas di sini. Default False — driver lain tak berubah.
+                answers_inline = getattr(
+                    self._protocol, "ANSWERS_QUERY_IN_ACK", False
                 )
-                # Simpan message di buffer kembali agar QueryHandler bisa ambil
-                # Sebenarnya kita simpan dalam instance variable
-                self._last_query_data = msg
-                return True
+                if not answers_inline or getattr(self._config, "has_query", False):
+                    self._logger.info(
+                        f"[{self._inst_name}] Query message terdeteksi"
+                    )
+                    # Simpan message di buffer kembali agar QueryHandler bisa ambil
+                    # Sebenarnya kita simpan dalam instance variable
+                    self._last_query_data = msg
+                    return True
+
+                self._logger.info(
+                    f"[{self._inst_name}] Query terdeteksi pada mode non-query "
+                    f"— dibalas default oleh protocol module"
+                )
+                await self._send_hl7_ack(msg, writer)
+                continue
 
             # Parse dan simpan sebagai result
             await self._parse_and_save(msg)
