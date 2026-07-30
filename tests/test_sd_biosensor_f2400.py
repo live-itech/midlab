@@ -1,9 +1,10 @@
 """
-Test driver HL7_SD_BIOSENSOR_F200 (IHE PCD-01 / HL7 v2.6) + integrasi TCPSocketService.
+Test driver HL7_SD_BIOSENSOR_F2400 (IHE PCD-01 / HL7 v2.6) + integrasi TCPSocketService.
 
 Pesan contoh disalin **verbatim dari log komunikasi alat** SD Biosensor
 STANDARD F2400 (2026-07-13), termasuk balasan driver lama sebagai baseline
-byte-level. Lini FLine memakai profil yang sama untuk F200 dan F2400 — lihat
+byte-level. Log sumbernya berasal dari F2400; lini FLine memakai profil yang
+sama untuk F2400 dan F200 — lihat
 docstring modul.
 """
 
@@ -12,15 +13,15 @@ import asyncio
 import pytest
 
 from protocols.base import load_module, is_mllp_protocol, _PROTOCOL_REGISTRY
-from protocols.sd_biosensor_f200.module import SDBiosensorF200Module
-from protocols.sd_biosensor_f200.builder import SDBiosensorF200Builder
-from protocols.sd_biosensor_f200.parser import (
+from protocols.sd_biosensor_f2400.module import SDBiosensorF2400Module
+from protocols.sd_biosensor_f2400.builder import SDBiosensorF2400Builder
+from protocols.sd_biosensor_f2400.parser import (
     to_iso8601, normalize_reference_range, parse_device_info, parse_derived_values,
 )
 from services.tcp_socket.receiver import ResultReceiver
 
 
-PROTOCOL = "HL7_SD_BIOSENSOR_F200"
+PROTOCOL = "HL7_SD_BIOSENSOR_F2400"
 GUID = "{b73a7615-2687-47bf-862e-b4465cde8332}"
 
 ORU = (
@@ -49,12 +50,12 @@ ACK_LEGACY = (
     b"\x1c\x0d"
 )
 
-INSTRUMENT = {"id": 91, "name": "SD F200", "protocol": PROTOCOL}
+INSTRUMENT = {"id": 91, "name": "SD F2400", "protocol": PROTOCOL}
 
 
 @pytest.fixture
 def mod():
-    return SDBiosensorF200Module()
+    return SDBiosensorF2400Module()
 
 
 # ============================================================
@@ -203,7 +204,7 @@ def test_nte_dibedakan_menurut_segment_induk(mod):
 # ============================================================
 
 def test_ack_identik_dengan_log(mod):
-    mod._builder = SDBiosensorF200Builder(now=lambda: "20260713113952")
+    mod._builder = SDBiosensorF2400Builder(now=lambda: "20260713113952")
     assert mod.build_ack_response(ORU, INSTRUMENT) == ACK_LEGACY
 
 
@@ -222,7 +223,7 @@ def test_ack_dibungkus_mllp(mod):
 
 def test_ack_varian_pcd_conformant():
     """Opsi balasan v2.6 yang memantulkan identitas alat."""
-    builder = SDBiosensorF200Builder(now=lambda: "20260713113952")
+    builder = SDBiosensorF2400Builder(now=lambda: "20260713113952")
     out = builder.build_ack_r01(
         {"control_id": GUID, "device_id": "FA24E01AA0173^70b3d57372500457^EUI-64"},
         pcd_conformant=True,
@@ -290,7 +291,7 @@ def test_parse_sample_id_kosong(mod):
 
 def test_parse_toleran_model_dan_serial_berbeda(mod):
     """
-    Log berasal dari F2400; unit F200 akan punya serial & EUI-64 lain, dan
+    Log berasal dari F2400; unit FLine lain akan punya serial & EUI-64 lain, dan
     mungkin Kind= lain. Tidak boleh ada yang di-hardcode.
     """
     msg = (ORU
@@ -305,7 +306,7 @@ def test_parse_toleran_model_dan_serial_berbeda(mod):
 
 
 def test_parse_parameter_selain_hba1c(mod):
-    """Parameter lain F200 (mis. CRP) memakai pola OBX yang sama."""
+    """Parameter lain lini FLine (mis. CRP) memakai pola OBX yang sama."""
     msg = (ORU
            .replace(b"4548-4^Hemoglobin A1c^LN", b"1988-5^C reactive protein^LN")
            .replace(b"|6.3|%^Percent^NGSP|[4.00;15.00]", b"|12.4|mg/L^mg/L^UCUM|[0;5]")
@@ -334,7 +335,7 @@ def test_parse_obx_dengan_abnormal_flag(mod):
 
 class _Cfg:
     id = 91
-    name = "SD F200"
+    name = "SD F2400"
     protocol = PROTOCOL
     mode = "unidirectional"
     bidir_mode = None
@@ -361,7 +362,7 @@ def test_receiver_menyimpan_hasil_dan_membalas_ack(monkeypatch):
         lambda *a, **k: saved.append(a) or 1,
     )
 
-    receiver = ResultReceiver(_Cfg(), SDBiosensorF200Module())
+    receiver = ResultReceiver(_Cfg(), SDBiosensorF2400Module())
     writer = _Writer()
 
     asyncio.run(receiver.handle_data(ORU, writer))
@@ -381,7 +382,7 @@ def test_receiver_menangani_dua_pesan_dalam_satu_paket(monkeypatch):
     )
 
     second = ORU.replace(GUID.encode(), b"{5d9d6588-20ca-4d0a-b1cf-8c2809e889f9}")
-    receiver = ResultReceiver(_Cfg(), SDBiosensorF200Module())
+    receiver = ResultReceiver(_Cfg(), SDBiosensorF2400Module())
     writer = _Writer()
 
     asyncio.run(receiver.handle_data(ORU + second, writer))

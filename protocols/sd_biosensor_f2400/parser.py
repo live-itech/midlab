@@ -1,5 +1,5 @@
 """
-protocols/sd_biosensor_f200/parser.py — Parser IHE PCD-01 SD Biosensor STANDARD F
+protocols/sd_biosensor_f2400/parser.py — Parser IHE PCD-01 SD Biosensor STANDARD F
 
 Menangani tiga hal yang khas PCD-01 dan tidak ada di driver HL7 lain repo ini:
 
@@ -20,7 +20,7 @@ import re
 
 from lib.utils import get_logger
 from protocols.hl7.parser import HL7Parser
-from protocols.sd_biosensor_f200.constants import (
+from protocols.sd_biosensor_f2400.constants import (
     FIELD_SEPARATOR, COMPONENT_SEP, SEGMENT_TERMINATOR,
     MESSAGE_ENCODING,
     SEG_MSH,
@@ -41,7 +41,7 @@ from protocols.sd_biosensor_f200.constants import (
 )
 
 
-logger = get_logger("sd_biosensor_f200_parser")
+logger = get_logger("sd_biosensor_f2400_parser")
 
 
 # `20260713114138-0500` / `20260713114138` / `202607131141` / `20260713`
@@ -178,7 +178,7 @@ def parse_derived_values(comment: str) -> list:
     return values
 
 
-class SDBiosensorF200Parser:
+class SDBiosensorF2400Parser:
     """Parser pesan IHE PCD-01 SD Biosensor STANDARD F."""
 
     def __init__(self):

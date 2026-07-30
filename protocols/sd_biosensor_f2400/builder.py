@@ -1,5 +1,5 @@
 """
-protocols/sd_biosensor_f200/builder.py — Builder balasan SD Biosensor STANDARD F
+protocols/sd_biosensor_f2400/builder.py — Builder balasan SD Biosensor STANDARD F
 
 Alat memasang `MSH-15 = AL` (Accept Acknowledgment: Always), jadi ACK **wajib**
 — tanpa balasan alat menganggap pengiriman gagal. `MSH-16 = NE` berarti alat
@@ -24,7 +24,7 @@ yang mengikuti PCD-01 (v2.6, identitas alat dipantulkan) bila suatu saat perlu.
 """
 
 from lib.utils import get_logger
-from protocols.sd_biosensor_f200.constants import (
+from protocols.sd_biosensor_f2400.constants import (
     MLLP_START_BYTE, MLLP_TRAILER,
     FIELD_SEPARATOR, ENCODING_CHARACTERS, SEGMENT_TERMINATOR,
     MESSAGE_ENCODING,
@@ -37,10 +37,10 @@ from protocols.sd_biosensor_f200.constants import (
 )
 
 
-logger = get_logger("sd_biosensor_f200_builder")
+logger = get_logger("sd_biosensor_f2400_builder")
 
 
-class SDBiosensorF200Builder:
+class SDBiosensorF2400Builder:
     """Builder balasan ACK^R01 (arah LIS → alat)."""
 
     def __init__(self, now=None):
@@ -70,7 +70,7 @@ class SDBiosensorF200Builder:
         menutup transaksi.
 
         Args:
-            context: hasil SDBiosensorF200Parser.parse_msh() pesan ORU
+            context: hasil SDBiosensorF2400Parser.parse_msh() pesan ORU
             pcd_conformant: True → balasan HL7 v2.6 yang memantulkan identitas
                 alat ke MSH-5/MSH-6 sesuai PCD-01. False (default) → byte-identik
                 dengan driver lama yang sudah terbukti diterima alat.

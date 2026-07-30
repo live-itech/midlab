@@ -1,13 +1,23 @@
 """
-protocols/sd_biosensor_f200/module.py — Protocol Module SD Biosensor STANDARD F200
+protocols/sd_biosensor_f2400/module.py — Protocol Module SD Biosensor STANDARD F2400
 
-Implementasi BaseProtocolModule untuk SD Biosensor STANDARD F200 Fluorescent
+Implementasi BaseProtocolModule untuk SD Biosensor STANDARD F2400 Fluorescent
 Immunoassay Analyzer, memakai profil **IHE PCD-01 DEC** di atas HL7 v2.6 + MLLP.
 
 ## Asal driver ini
 
-Disusun dari log komunikasi riil (2026-07-13) yang diambil dari **F2400**, bukan
-F200. Dasar penyamaannya:
+Disusun dari log komunikasi riil (2026-07-13) yang diambil langsung dari
+**F2400** — alat inilah sumber kebenaran driver ini.
+
+Driver sempat dinamai F200 saat pertama dibuat; nama itu keliru. Log yang
+dipakai menyusunnya selalu berasal dari F2400, jadi sejak commit rename ini
+nama modul mengikuti alat yang benar-benar terekam.
+
+## Kaitan dengan model FLine lain (mis. F200)
+
+Driver ini **tidak meng-hardcode apa pun yang model-spesifik** — identitas alat
+dibaca dari MSH-3 tiap pesan dan daftar tes tidak dibatasi. Karena itu model
+FLine lain kemungkinan besar ikut jalan tanpa perubahan:
 
 - Leaflet resmi SD Biosensor mencantumkan baris "LIS/HIS connectivity" yang
   identik untuk F200 dan F2400: `HL7 v2.6(PCD-01)` + `POCT1-A`
@@ -17,9 +27,8 @@ F200. Dasar penyamaannya:
   bukan model
 - PCD-01 adalah profil terstandar IHE; kerangka pesannya ditentukan standar
 
-Karena itu driver ini **tidak meng-hardcode apa pun yang model-spesifik**.
-Identitas alat dibaca dari MSH-3 tiap pesan, dan daftar tes tidak dibatasi.
-Yang wajib diverifikasi saat pertama kali dipasang di F200 ada di bawah.
+Tetap **belum diverifikasi** terhadap unit F200 fisik. Bila nanti dipasang di
+F200 dan ternyata berbeda, buat driver terpisah — jangan longgarkan driver ini.
 
 ## Alur (unidirectional)
 
@@ -29,16 +38,16 @@ Yang wajib diverifikasi saat pertama kali dipasang di F200 ada di bawah.
 Alat memasang `MSH-15 = AL`, jadi ACK wajib. `MSH-16 = NE` — tidak ada
 application-ACK terpisah.
 
-## Yang perlu diverifikasi di F200
+## Yang perlu diverifikasi saat dipasang di model FLine lain
 
 1. Format `MSH-3` (serial + EUI-64) — dibaca dinamis, tidak masalah bila beda
 2. `Kind=` pada NTE info alat — mungkin bukan `FLine1`
 3. Menu tes: log hanya memuat HbA1c (`4548-4^Hemoglobin A1c^LN`). Parameter
-   lain F200 (CRP, PCT, TnI, D-dimer, dst.) mengikuti pola OBX yang sama, tapi
+   lain (CRP, PCT, TnI, D-dimer, dst.) mengikuti pola OBX yang sama, tapi
    NTE nilai turunan seperti `eAG`/`IFCC` khas HbA1c
-4. Apakah F200 juga menerima ACK versi 2.3.1 — lihat catatan di builder
+4. Apakah model itu juga menerima ACK versi 2.3.1 — lihat catatan di builder
 
-Di-load dynamic via protocols.base.load_module("HL7_SD_BIOSENSOR_F200").
+Di-load dynamic via protocols.base.load_module("HL7_SD_BIOSENSOR_F2400").
 """
 
 from lib.utils import get_logger
@@ -46,29 +55,29 @@ from lib.models import (
     ResultObject, PatientInfo, SpecimenInfo, OrderInfo, TestResult,
 )
 from protocols.base import BaseProtocolModule
-from protocols.sd_biosensor_f200.constants import (
+from protocols.sd_biosensor_f2400.constants import (
     PROTOCOL_NAME, PROTOCOL_VERSION,
     SEG_MSH, SEG_PID, SEG_MSA,
     ACK_AA, ACK_AE, ACK_AR,
     RESULT_EVENT_PREFIX,
     DERIVED_VALUE_STATUS,
 )
-from protocols.sd_biosensor_f200.parser import (
-    SDBiosensorF200Parser, field, parse_device_info, parse_derived_values,
+from protocols.sd_biosensor_f2400.parser import (
+    SDBiosensorF2400Parser, field, parse_device_info, parse_derived_values,
 )
-from protocols.sd_biosensor_f200.builder import SDBiosensorF200Builder
+from protocols.sd_biosensor_f2400.builder import SDBiosensorF2400Builder
 
 
-class SDBiosensorF200Module(BaseProtocolModule):
-    """Protocol module SD Biosensor STANDARD F200 — IHE PCD-01 / HL7 v2.6."""
+class SDBiosensorF2400Module(BaseProtocolModule):
+    """Protocol module SD Biosensor STANDARD F2400 — IHE PCD-01 / HL7 v2.6."""
 
     # Alat tidak pernah meminta order (PCD-01 DEC hanya pelaporan hasil).
     ACK_EXPECTED_ON_NOT_FOUND = False
 
     def __init__(self):
-        self._parser = SDBiosensorF200Parser()
-        self._builder = SDBiosensorF200Builder()
-        self._logger = get_logger("sd_biosensor_f200")
+        self._parser = SDBiosensorF2400Parser()
+        self._builder = SDBiosensorF2400Builder()
+        self._logger = get_logger("sd_biosensor_f2400")
 
     # ============================================================
     # Properties
@@ -118,7 +127,7 @@ class SDBiosensorF200Module(BaseProtocolModule):
 
         msh = self._parser.parse_msh(msh_fields)
 
-        from protocols.sd_biosensor_f200.parser import to_iso8601
+        from protocols.sd_biosensor_f2400.parser import to_iso8601
         if msh.get("datetime"):
             result.message_datetime = to_iso8601(msh["datetime"])
 

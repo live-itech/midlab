@@ -1,7 +1,8 @@
 """
-protocols/sd_biosensor_f200/constants.py — Konstanta IHE PCD-01 SD Biosensor STANDARD F
+protocols/sd_biosensor_f2400/constants.py — Konstanta IHE PCD-01 SD Biosensor STANDARD F
 
-Berlaku untuk lini STANDARD F (FLine) SD Biosensor — F200 dan F2400. Leaflet
+Disusun dari log F2400. Berlaku untuk lini STANDARD F (FLine) SD Biosensor
+— F2400 (terverifikasi) dan kemungkinan F200 (belum diuji). Leaflet
 resmi pabrikan mencantumkan baris "LIS/HIS connectivity" yang identik untuk
 kedua model (`HL7 v2.6(PCD-01)` + `POCT1-A`), dan SD Biosensor menerbitkan satu
 dokumen integrasi untuk seluruh "FLine analyzers". Log yang dipakai menyusun
@@ -37,7 +38,7 @@ from protocols.hl7.constants import (  # noqa: F401 — re-export untuk parser/b
 # Identitas module
 # ============================================================
 
-PROTOCOL_NAME = "HL7_SD_BIOSENSOR_F200"
+PROTOCOL_NAME = "HL7_SD_BIOSENSOR_F2400"
 PROTOCOL_VERSION = "1.0.0"
 
 DEVICE_HL7_VERSION = "2.6"          # MSH-12 pesan alat (log)

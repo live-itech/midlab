@@ -57,7 +57,7 @@ sudo git clone -b main git@github.com:live-itech/midlab.git /opt/midlab
 ```
 
 Sudah termasuk semua protocol driver (ASTM, HL7, BCI, Cobas C111, ARUMA AR580,
-Mindray BS200E, **Mindray BC-5150**, **SD Biosensor STANDARD F200**) di
+Mindray BS200E, **Mindray BC-5150**, **SD Biosensor STANDARD F2400**) di
 `protocols/`.
 
 ---
