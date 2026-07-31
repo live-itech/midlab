@@ -159,7 +159,10 @@ async def _startup():
     try:
         rows = session.query(TblInstrument).filter(TblInstrument.is_active == True).all()
         ids = [r.id for r in rows]
-        watchdog.register_instrument_services(ids)
+        # Bridge hanya untuk alat yang sudah di-cutover ke EazyApp; alat legacy
+        # tetap dilayani ResultSenderService.
+        bridge_ids = [r.id for r in rows if r.lis_bridge_enabled]
+        watchdog.register_instrument_services(ids, lis_bridge_ids=bridge_ids)
     except Exception as e:
         logger.warning(f"Gagal load instruments untuk watchdog: {e}")
     finally:
@@ -521,6 +524,8 @@ async def create_instrument(body: InstrumentCreate, x_api_key: str = Header(None
 
         # Register ke watchdog
         watchdog.register_service(f"tcp_{row.id}", instrument_id=row.id)
+        if row.lis_bridge_enabled:
+            watchdog.register_service(f"lis_bridge_{row.id}", instrument_id=row.id)
 
         logger.info(f"Instrument created: id={row.id} name={row.name}")
         return _instrument_to_response(row)
@@ -570,6 +575,14 @@ async def update_instrument(
 
         session.commit()
         session.refresh(row)
+
+        # Toggle lis_bridge_enabled → bridge langsung muncul/hilang di halaman
+        # Services tanpa perlu restart web console.
+        svc_bridge = f"lis_bridge_{row.id}"
+        if row.lis_bridge_enabled:
+            watchdog.register_service(svc_bridge, instrument_id=row.id)
+        elif not watchdog._is_process_alive(svc_bridge):
+            watchdog._services.pop(svc_bridge, None)
 
         logger.info(f"Instrument updated: id={instrument_id}")
         return _instrument_to_response(row)

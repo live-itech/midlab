@@ -572,10 +572,24 @@ class ServiceWatchdog:
                 "log_file": None,
             }
 
-    def register_instrument_services(self, instrument_ids: list[int]):
-        """Register semua tcp_<id> service berdasarkan list instrument IDs."""
+    def register_instrument_services(
+        self,
+        instrument_ids: list[int],
+        lis_bridge_ids: list[int] | None = None,
+    ):
+        """
+        Register service per-alat berdasarkan list instrument IDs.
+
+        - tcp_<id>        → untuk semua alat aktif
+        - lis_bridge_<id> → hanya untuk alat di lis_bridge_ids (yaitu yang
+          lis_bridge_enabled=1). Tanpa registrasi ini, bridge tidak muncul
+          di GET /api/services sehingga UI tidak punya tombol Start-nya.
+        """
         for iid in instrument_ids:
             self.register_service(f"tcp_{iid}", instrument_id=iid)
+
+        for iid in lis_bridge_ids or []:
+            self.register_service(f"lis_bridge_{iid}", instrument_id=iid)
 
     def ensure_core_services(self):
         """Pastikan core services (result_sender, order_receiver) terdaftar."""
