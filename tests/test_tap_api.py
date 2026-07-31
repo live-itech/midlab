@@ -163,6 +163,36 @@ class TestSendManual:
         assert terkirim == [b"\x0b\x05"]
 
 
+class TestStopSession:
+    def test_sesi_jalan_dihentikan(self, client, mock_db, monkeypatch):
+        dihentikan = []
+        monkeypatch.setattr(api._TAP_RUNNER, "stop", lambda i: dihentikan.append(i))
+        monkeypatch.setattr(api._TAP_RUNNER, "get", lambda i: object())
+        r = client.post("/api/tap/sessions/1/stop")
+        assert r.status_code == 200
+        assert dihentikan == [1]
+
+    def test_baris_nyangkut_running_direkonsiliasi(self, client, mock_db,
+                                                   monkeypatch):
+        # Kalau web console pernah restart, task-nya hilang tapi baris DB tetap
+        # 'running' — dan dulu endpoint ini tetap menjawab sukses, jadi sesi itu
+        # mustahil dihentikan lewat UI. Baris yatim harus ditutup di sini.
+        monkeypatch.setattr(api._TAP_RUNNER, "get", lambda i: None)
+        row = MagicMock(status="running", stopped_at=None)
+        mock_db.return_value.get_session.return_value.get.return_value = row
+
+        r = client.post("/api/tap/sessions/1/stop")
+        assert r.status_code == 200
+        assert row.status == "stopped"
+        assert row.stopped_at is not None
+
+    def test_sesi_tak_dikenal_404(self, client, mock_db, monkeypatch):
+        monkeypatch.setattr(api._TAP_RUNNER, "get", lambda i: None)
+        mock_db.return_value.get_session.return_value.get.return_value = None
+        r = client.post("/api/tap/sessions/999/stop")
+        assert r.status_code == 404
+
+
 class TestStream:
     def test_sesi_mati_langsung_kirim_done(self, client, jsonl):
         # Sesi tidak ada di _TAP_RUNNER → stream mengirim event 'done' lalu tutup,

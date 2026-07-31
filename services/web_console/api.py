@@ -1709,8 +1709,34 @@ async def create_tap_session(body: TapSessionCreate, x_api_key: str = Header(Non
 @app.post("/api/tap/sessions/{session_id}/stop", response_model=MessageResponse)
 async def stop_tap_session(session_id: int, x_api_key: str = Header(None)):
     _verify_api_key(x_api_key)
-    _TAP_RUNNER.stop(session_id)
-    return MessageResponse(success=True, message=f"Sesi tap #{session_id} dihentikan")
+    if _TAP_RUNNER.get(session_id) is not None:
+        _TAP_RUNNER.stop(session_id)
+        return MessageResponse(
+            success=True, message=f"Sesi tap #{session_id} dihentikan"
+        )
+
+    # Task-nya tidak ada — biasanya web console pernah restart selagi sesi jalan.
+    # Barisnya tetap 'running' dan tidak ada yang akan menutupnya, jadi tutup di
+    # sini. Tanpa ini sesi yatim itu mustahil dihentikan lewat UI.
+    session = DBManager().get_session()
+    try:
+        row = session.get(TblTapSession, session_id)
+        if row is None:
+            raise HTTPException(404, f"Sesi tap #{session_id} tidak ada")
+        if row.status == "running":
+            row.status = "stopped"
+            row.stopped_at = timeutil.now_naive()
+            session.commit()
+            return MessageResponse(
+                success=True,
+                message=f"Sesi tap #{session_id} sudah tidak berjalan — "
+                        f"status dirapikan jadi 'stopped'",
+            )
+        return MessageResponse(
+            success=True, message=f"Sesi tap #{session_id} memang sudah berhenti"
+        )
+    finally:
+        session.close()
 
 
 @app.get("/api/tap/sessions/{session_id}/events")

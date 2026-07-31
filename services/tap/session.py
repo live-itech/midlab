@@ -56,7 +56,10 @@ class TapSession:
         """Loop sampai transport putus (TCP) atau stop() dipanggil."""
         try:
             while not self._berhenti.is_set():
-                data = await self._transport.read()
+                data = await self._baca()
+                if data is None:
+                    # stop() dipanggil selagi menunggu byte.
+                    break
                 if not data:
                     # Arti b"" bergantung transport: TCP = putus (keluar);
                     # serial = alat sedang diam (lanjut, port masih terbuka).
@@ -66,6 +69,33 @@ class TapSession:
                 await self._proses(data)
         finally:
             await self._transport.close()
+
+    async def _baca(self) -> bytes | None:
+        """
+        Tunggu byte alat, TAPI tetap responsif terhadap stop().
+
+        Menunggu transport.read() langsung membuat sesi tidak bisa dihentikan
+        selama alat diam — read() menggantung selamanya dan flag _berhenti di
+        puncak loop tidak pernah terbaca. Jadi keduanya dibalapkan.
+
+        Return None artinya stop() menang; b"" tetap berarti transport putus.
+        """
+        baca = asyncio.ensure_future(self._transport.read())
+        henti = asyncio.ensure_future(self._berhenti.wait())
+        try:
+            await asyncio.wait(
+                {baca, henti}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            henti.cancel()
+
+        if not baca.done():
+            # Byte yang mungkin sudah separuh terbaca ikut dibuang bersama task
+            # ini — tapi transport memang sedang ditutup, jadi tidak ada yang
+            # menunggu lanjutannya.
+            baca.cancel()
+            return None
+        return baca.result()
 
     async def _proses(self, data: bytes) -> None:
         # 1. REKAM DULU — sebelum apa pun dikirim balik.

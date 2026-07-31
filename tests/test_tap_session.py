@@ -205,6 +205,37 @@ class TestTapSession:
         assert t.tertutup is True
 
     @pytest.mark.asyncio
+    async def test_stop_saat_alat_diam(self, rec_path):
+        # KASUS NYATA yang bikin tombol Stop mati: alat sudah connect tapi tidak
+        # mengirim apa pun, jadi read() menggantung selamanya. Flag _berhenti
+        # hanya dicek di puncak loop — kalau read() tidak pernah balik, flag itu
+        # tidak pernah terbaca. Sesi harus tetap bisa dihentikan.
+        class TransportBisu(TransportPalsu):
+            async def read(self) -> bytes:
+                await asyncio.Event().wait()      # tidak pernah selesai
+
+        t = TransportBisu([])
+        with TapRecorder(rec_path) as rec:
+            s = TapSession(t, "RAW", rec)
+            tugas = asyncio.create_task(s.run())
+            await asyncio.sleep(0.05)
+            s.stop()
+            await asyncio.wait_for(tugas, timeout=2)
+        assert t.tertutup is True
+
+    @pytest.mark.asyncio
+    async def test_stop_tidak_membuang_byte_yang_sudah_terbaca(self, rec_path):
+        # Stop tidak boleh mengorbankan data: byte yang sudah sempat dibaca
+        # harus tetap terekam sebelum loop keluar.
+        t = TransportPalsu([ORU])
+        with TapRecorder(rec_path) as rec:
+            s = TapSession(t, "HL7", rec)
+            await s.run()
+            s.stop()
+        assert s.bytes_rx == len(ORU)
+        assert any(e["dir"] == "rx" for e in read_events(rec_path))
+
+    @pytest.mark.asyncio
     async def test_bidi_menandai_query_tanpa_menjawabnya(self, rec_path):
         # bidi sengaja TIDAK mengarang jawaban: bentuk not-found beda per tipe
         # query, dan respons salah bisa membuat alat mencatat error — mengotori
