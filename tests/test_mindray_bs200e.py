@@ -162,6 +162,23 @@ def test_query_response_qck_lalu_dsr(module):
     assert b"DSC||" in resp                   # penanda pesan terakhir
 
 
+def test_sample_time_ber_offset_dikonversi_ke_jam_lab(module):
+    """
+    EazyApp mengirim `request_datetime` ISO8601 ber-offset UTC. Membuang
+    offsetnya begitu saja membuat alat mencatat sample time 7 jam lebih awal
+    dari jam dinding lab.
+    """
+    order = dict(ORDER, request_datetime="2026-08-01T06:49:18+00:00")
+    resp = module.format_query_response(order, INSTRUMENT)
+    assert b"DSP|23||20260801134918|||" in resp
+
+
+def test_sample_time_tanpa_offset_tetap_dibaca_sebagai_jam_lab(module):
+    """Timestamp tanpa zona sudah jam lab — tidak boleh digeser."""
+    resp = module.format_query_response(ORDER, INSTRUMENT)
+    assert b"DSP|23||20260716100000|||" in resp
+
+
 def test_query_not_found_tanpa_dsr(module):
     context = module.handle_enq(QRY, INSTRUMENT)["_msh"]
     resp = module.format_query_not_found_full(INSTRUMENT, context)

@@ -10,6 +10,7 @@ Layout field mengikuti contoh pesan di bab 3 manual, termasuk trailing `|`
 pada tiap segment — beberapa firmware Mindray rewel soal jumlah field.
 """
 
+from datetime import datetime
 from itertools import count
 
 from lib.utils import get_logger
@@ -34,14 +35,44 @@ from protocols.mindray_bs200e.constants import (
 logger = get_logger("mindray_bs200e_builder")
 
 
+def _parse_offset_timestamp(value: str):
+    """
+    Baca `value` sebagai ISO8601 **ber-offset**; None bila bukan.
+
+    Hanya nilai yang membawa zona yang dikembalikan — sisanya (jam polos tanpa
+    zona, format non-ISO, string kosong) dibiarkan lewat ke jalur digit biasa
+    supaya jam lokal tidak pernah tergeser oleh asumsi zona.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 def to_hl7_timestamp(value: str, pad: bool = True) -> str:
     """
     Ubah timestamp apa pun (ISO8601, `YYYYMMDD`, `YYYYMMDDHHMMSS`) menjadi
     format Mindray `YYYYMMDDHHMMSS`.
 
+    Nilai ber-offset zona (`2026-08-01T06:49:18+00:00`, bentuk yang dipakai
+    EazyApp) dikonversi dulu ke jam dinding lab — membuang offsetnya begitu
+    saja menggeser sample time 7 jam untuk order yang datang dalam UTC.
+    Nilai tanpa offset dianggap sudah jam lab dan tidak digeser.
+
     Alat menolak separator, jadi semua karakter non-digit dibuang. Tanggal
     tanpa jam di-pad dengan `000000` (contoh manual: `19620824000000`).
     """
+    aware = _parse_offset_timestamp(value)
+    if aware is not None:
+        from lib import timeutil
+        return timeutil.stamp("%Y%m%d%H%M%S", timeutil.to_local(aware))
+
     digits = "".join(ch for ch in (value or "") if ch.isdigit())
     if not digits:
         return ""
