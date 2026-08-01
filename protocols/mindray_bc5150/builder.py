@@ -21,6 +21,7 @@ ORR^O02 sebagai `20081120175238` — timestamp beku dari 2008 yang jelas bug
 lab saat pesan dibuat. Alat tidak memvalidasi field ini.
 """
 
+from datetime import datetime
 from itertools import count
 
 from lib.utils import get_logger
@@ -55,8 +56,21 @@ def to_hl7_timestamp(value: str, pad: bool = True) -> str:
     Ubah timestamp apa pun (ISO8601, `YYYYMMDD`, `YYYYMMDDHHMMSS`) menjadi
     format alat `YYYYMMDDHHMMSS`.
 
+    Nilai ber-offset zona (`2026-08-01T06:49:18+00:00`, bentuk yang dipakai
+    EazyApp) dikonversi dulu ke jam dinding lab. Membuang offsetnya begitu
+    saja — yang dilakukan versi sebelumnya — menggeser draw time 7 jam untuk
+    order yang datang dalam UTC.
+
+    Nilai tanpa offset dianggap sudah jam lab dan tidak digeser: alat dan
+    driver lama sama-sama mengirim `YYYYMMDDHHMMSS` polos.
+
     Semua karakter non-digit dibuang; tanggal tanpa jam di-pad `000000`.
     """
+    aware = _parse_offset_timestamp(value)
+    if aware is not None:
+        from lib import timeutil
+        return timeutil.stamp("%Y%m%d%H%M%S", timeutil.to_local(aware))
+
     digits = "".join(ch for ch in (value or "") if ch.isdigit())
     if not digits:
         return ""
@@ -64,6 +78,26 @@ def to_hl7_timestamp(value: str, pad: bool = True) -> str:
     if pad and len(digits) < 14:
         digits = digits.ljust(14, "0")
     return digits
+
+
+def _parse_offset_timestamp(value: str):
+    """
+    Baca `value` sebagai ISO8601 **ber-offset**; None bila bukan.
+
+    Hanya nilai yang membawa zona yang dikembalikan — sisanya (jam polos tanpa
+    zona, format non-ISO, string kosong) dibiarkan lewat ke jalur digit biasa
+    supaya jam lokal tidak pernah tergeser oleh asumsi zona.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def escape(value: str) -> str:
@@ -366,6 +400,31 @@ class MindrayBC5150Builder:
         location = f"{point_of_care}^{room}^{bed}".rstrip("^")
         return FIELD_SEPARATOR.join(["PV1", "1", "", location])
 
+    def _draw_time(self, order: dict) -> str:
+        """
+        Waktu pengambilan darah untuk OBR-6, dengan fallback berlapis.
+
+        BC-5150 memvalidasi field ini saat operator menekan OK di dialog info
+        sampel: draw time kosong = worklist ditolak, operator harus mengetik
+        manual tiap sampel. Karena itu field ini tidak pernah dikirim kosong.
+
+        Urutan sumber, dari yang paling benar:
+        1. `specimen.collected_at` — jam flebotomi asli dari LIS.
+        2. `request_datetime` — jam order dibuat; selisihnya menit dan alat
+           memakainya untuk peringatan umur sampel, jadi cukup akurat.
+        3. Jam lab saat worklist dibangun — sampel baru saja diambil bila
+           alat menanyakannya sekarang.
+        """
+        order = order or {}
+        specimen = order.get("specimen") or {}
+
+        for candidate in (specimen.get("collected_at"),
+                          order.get("request_datetime")):
+            stamp = to_hl7_timestamp(candidate or "")
+            if stamp:
+                return stamp
+        return self._now()
+
     def _build_obr(self, order: dict, sample_id: str) -> str:
         """
         OBR untuk worklist — sample ID di OBR-2 (dok §5.5), bukan OBR-3.
@@ -374,13 +433,12 @@ class MindrayBC5150Builder:
         setiap nilai ditentukan posisinya.
         """
         order = order or {}
-        specimen = order.get("specimen") or {}
 
         return _padded_segment("OBR", {
             1: "1",
             OBR_FIELD_PLACER_SAMPLE_ID: sample_id,
             OBR_FIELD_SERVICE_ID: SERVICE_AUTOMATED_COUNT,
-            OBR_FIELD_DRAW_TIME: to_hl7_timestamp(specimen.get("collected_at", "")),
+            OBR_FIELD_DRAW_TIME: self._draw_time(order),
             OBR_FIELD_SENDER: escape(order.get("sender", "")),
             OBR_FIELD_CLINICAL_INFO: escape(order.get("clinical_info", "")),
             OBR_FIELD_RECEIVED_TIME: to_hl7_timestamp(

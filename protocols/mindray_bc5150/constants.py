@@ -221,14 +221,27 @@ BLOOD_MODE_WHOLE = "W"        # whole blood
 BLOOD_MODE_PREDILUTE = "P"    # predilute
 
 # Peta sample_type OrderObject → Blood Mode alat. Kunci di-lowercase.
+# Istilah Bahasa Indonesia ikut dipetakan karena itulah yang dikirim EazyApp
+# di lapangan ("Darah Vena"). Sampel yang tidak jelas cara jalannya — mis.
+# "darah kapiler", yang bisa whole blood maupun predilute tergantung apakah
+# lab mengencerkannya — sengaja tidak dipetakan: alat memakai setelan sendiri,
+# lebih aman daripada memaksa mode yang salah.
 BLOOD_MODE_BY_SAMPLE_TYPE = {
     "whole blood": BLOOD_MODE_WHOLE,
     "wholeblood": BLOOD_MODE_WHOLE,
     "darah": BLOOD_MODE_WHOLE,
+    "darah vena": BLOOD_MODE_WHOLE,
+    "darah lengkap": BLOOD_MODE_WHOLE,
+    "darah edta": BLOOD_MODE_WHOLE,
+    "vena": BLOOD_MODE_WHOLE,
+    "venous": BLOOD_MODE_WHOLE,
+    "venous blood": BLOOD_MODE_WHOLE,
     "edta": BLOOD_MODE_WHOLE,
     "w": BLOOD_MODE_WHOLE,
     "predilute": BLOOD_MODE_PREDILUTE,
     "prediluted": BLOOD_MODE_PREDILUTE,
+    "predilusi": BLOOD_MODE_PREDILUTE,
+    "darah predilusi": BLOOD_MODE_PREDILUTE,
     "p": BLOOD_MODE_PREDILUTE,
 }
 

@@ -436,6 +436,78 @@ def test_blood_mode_tidak_dikirim_bila_sample_type_tak_dikenal(mod):
     assert b"08002^Blood Mode" not in out
 
 
+def test_blood_mode_mengenali_sample_type_bahasa_indonesia(mod):
+    """
+    EazyApp mengirim `sample_type` dalam Bahasa Indonesia ("Darah Vena"), bukan
+    istilah dok vendor. Tanpa mapping ini Blood Mode tidak pernah terkirim
+    untuk order dari lapangan.
+    """
+    order = dict(ORDER, specimen={"sample_id": "257", "sample_type": "Darah Vena"})
+    obx = {s[3]: s[5] for s in _segments(mod.format_query_response(order, INSTRUMENT))["OBX"]}
+    assert obx["08002^Blood Mode^99MRC"] == "W"
+
+
+# ============================================================
+# Draw time (OBR-6)
+#
+# BC-5150 menolak worklist dengan draw time kosong: operator menekan OK di
+# dialog info sampel dan alat memunculkan error draw time. EazyApp belum
+# mengirim `specimen.collected_at`, jadi builder harus punya rantai fallback.
+# ============================================================
+
+def _obr(message: bytes) -> list:
+    return _segments(message)["OBR"][0]
+
+
+def test_draw_time_memakai_collected_at_bila_ada(mod):
+    order = dict(ORDER, specimen=dict(ORDER["specimen"],
+                                      collected_at="20090203094500"))
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20090203094500"
+
+
+def test_draw_time_jatuh_ke_request_datetime_bila_collected_at_kosong(mod):
+    """
+    Order dari LIS umumnya tidak membawa jam flebotomi. Jam order dibuat
+    selisihnya menit dari jam pengambilan — jauh lebih baik daripada kosong,
+    yang membuat alat menolak worklist.
+    """
+    assert _obr(mod.format_query_response(ORDER, INSTRUMENT))[6] == "20090203101020"
+
+
+def test_draw_time_jatuh_ke_jam_lab_bila_order_tanpa_waktu_sama_sekali(mod):
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20141105151358"))
+    order = dict(ORDER, request_datetime="",
+                 specimen={"sample_id": "257", "sample_type": "whole blood"})
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20141105151358"
+
+
+def test_draw_time_ber_offset_dikonversi_ke_jam_lab(mod):
+    """
+    EazyApp mengirim ISO8601 ber-offset UTC (`+00:00`). Membuang offsetnya
+    begitu saja membuat alat menerima jam 7 jam lebih awal dari jam dinding
+    lab — draw time sampel pagi jadi tercatat dini hari.
+    """
+    order = dict(ORDER, specimen=dict(ORDER["specimen"],
+                                      collected_at="2026-08-01T06:49:18+00:00"))
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20260801134918"
+
+
+def test_received_time_ber_offset_dikonversi_ke_jam_lab(mod):
+    """OBR-14 (waktu order dibuat) datang dari sumber yang sama, bug yang sama."""
+    order = dict(ORDER, request_datetime="2026-08-01T06:49:18+00:00")
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[14] == "20260801134918"
+
+
+def test_timestamp_tanpa_offset_tetap_dibaca_sebagai_jam_lab(mod):
+    """
+    Alat dan driver lama mengirim `YYYYMMDDHHMMSS` polos tanpa zona. Nilai
+    seperti itu sudah jam dinding lab dan tidak boleh digeser.
+    """
+    from protocols.mindray_bc5150.builder import to_hl7_timestamp
+    assert to_hl7_timestamp("20190504060725") == "20190504060725"
+    assert to_hl7_timestamp("19950804") == "19950804000000"
+
+
 def test_pv1_hanya_dibangun_bila_ada_lokasi(mod):
     assert b"PV1" not in mod.format_query_response(ORDER, INSTRUMENT)
 
