@@ -11,6 +11,11 @@ set -euo pipefail
 MIDLAB_DIR="/opt/midlab"
 LOG_DIR="/var/log/midlab"
 CONFIG_DIR="/etc/midlab"
+# State watchdog (flag auto_restart) — harus persisten lintas reboot.
+# JANGAN taruh di /run: itu tmpfs, isinya hilang tiap server dimatikan dan
+# semua service alat jadi tidak nyala otomatis.
+STATE_DIR="/var/lib/midlab"
+RUN_DIR="/run/midlab"
 SYSTEMD_DIR="/etc/systemd/system"
 VENV_DIR="$MIDLAB_DIR/.venv"
 MIDLAB_USER="midlab"
@@ -59,7 +64,13 @@ fi
 # 2. Direktori + permissions
 # --------------------------------------------------
 info "Menyiapkan direktori..."
-mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$MIDLAB_DIR"
+mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$MIDLAB_DIR" "$STATE_DIR"
+
+# PID file watchdog di /run (tmpfs) — direktorinya harus dibuat ulang tiap
+# boot lewat tmpfiles.d, kalau tidak watchdog fallback ke $MIDLAB_DIR/run.
+info "Menyiapkan tmpfiles.d untuk $RUN_DIR..."
+echo "d $RUN_DIR 0755 $MIDLAB_USER $MIDLAB_GROUP -" > /etc/tmpfiles.d/midlab.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/midlab.conf || true
 
 # Copy source ke $MIDLAB_DIR (kalau berbeda dari source)
 if [[ "$SRC_DIR" != "$MIDLAB_DIR" ]]; then
@@ -72,6 +83,9 @@ fi
 
 chown -R "$MIDLAB_USER":"$MIDLAB_GROUP" "$LOG_DIR" "$MIDLAB_DIR"
 chmod 755 "$LOG_DIR" "$MIDLAB_DIR"
+
+chown "$MIDLAB_USER":"$MIDLAB_GROUP" "$STATE_DIR"
+chmod 755 "$STATE_DIR"
 
 chown root:"$MIDLAB_GROUP" "$CONFIG_DIR"
 chmod 750 "$CONFIG_DIR"

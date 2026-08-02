@@ -168,6 +168,16 @@ async def _startup():
     finally:
         session.close()
 
+    # Nyalakan lagi service yang auto_restart-nya aktif. Tanpa ini, setelah
+    # server reboot cuma web console yang hidup (satu-satunya unit systemd
+    # yang enabled) sementara semua service alat diam sampai di-Start manual.
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            None, watchdog.autostart_enabled_services
+        )
+    except Exception as e:
+        logger.warning(f"Autostart service gagal: {e}")
+
     await watchdog.start_monitor()
     logger.info("Web Console API started")
 

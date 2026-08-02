@@ -137,6 +137,15 @@ Sebelum mulai develop, baca file-file ini secara berurutan:
 
 - Watchdog menjalankan service lain sebagai **subprocess** (bukan thread).
   PID di-track di `/var/run/midlab/` atau fallback ke `/opt/midlab/run/`.
+- **Autostart setelah reboot** — hanya `midlab-web-console` yang jadi unit systemd
+  enabled; `tcp_<id>` dan `lis_bridge_<id>` adalah subprocess watchdog. Yang
+  menyalakannya kembali adalah flag `auto_restart` di
+  `/var/lib/midlab/watchdog_state.json`. **State ini wajib di direktori
+  persisten** — dulu ikut di `/var/run/midlab` (tmpfs) sehingga hilang tiap
+  reboot dan semua service alat diam sampai di-Start manual.
+- Saat startup watchdog meng-adopsi proses yang masih hidup lewat PID file
+  (dicocokkan dengan `/proc/<pid>/cmdline`), supaya web console yang restart
+  sendiri tidak menspawn service kedua untuk alat yang sama.
 - **Starlette 1.0.0** — `TemplateResponse` signature: `(request, name, context)`,
   BUKAN `(name, {"request": request, ...})` seperti versi lama.
 - Static files di-mount dari `services/web_console/static/`, bukan dari project root.
@@ -186,7 +195,8 @@ Sebelum mulai develop, baca file-file ini secara berurutan:
 |---|---|
 | `/etc/midlab/config.yaml` | Konfigurasi utama semua service |
 | `/var/log/midlab/` | Log files |
-| `/var/run/midlab/` | PID files watchdog (fallback: `/opt/midlab/run/`) |
+| `/var/run/midlab/` | PID files watchdog (tmpfs, fallback: `/opt/midlab/run/`) |
+| `/var/lib/midlab/` | State watchdog persisten (`watchdog_state.json`) |
 | `/etc/systemd/system/midlab-*.service` | Systemd unit files |
 
 ---
@@ -328,6 +338,7 @@ Untuk langkah instalasi lengkap (deploy dari git → systemd), lihat **[INSTALL.
 - [ ] User system `midlab` sudah dibuat: `sudo useradd -r -s /bin/false midlab`
 - [ ] Direktori log writable oleh user `midlab`: `/var/log/midlab/`
 - [ ] Direktori run writable oleh user `midlab`: `/var/run/midlab/` atau `/opt/midlab/run/`
+- [ ] Direktori state writable oleh user `midlab`: `/var/lib/midlab/` (persisten, bukan tmpfs)
 - [ ] File config ada dan lengkap: `/etc/midlab/config.yaml`
 - [ ] `lis_api_url` di config sudah diisi dengan URL LIS yang benar
 - [ ] Script install sudah dijalankan: `sudo bash /opt/midlab/scripts/install.sh`

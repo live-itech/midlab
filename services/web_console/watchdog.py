@@ -12,8 +12,8 @@ Service yang dikelola:
 - order_receiver → python3 -m services.order_receiver.main
 - tcp_<id>       → python3 -m services.tcp_socket.main --instrument-id <id>
 
-PID files: /var/run/midlab/<service_name>.pid
-State file: /var/run/midlab/watchdog_state.json
+PID files: /var/run/midlab/<service_name>.pid       (volatile, boleh hilang)
+State file: /var/lib/midlab/watchdog_state.json     (persisten, wajib selamat reboot)
 """
 
 import asyncio
@@ -27,19 +27,34 @@ import time
 from lib.config import Config
 from lib.utils import get_logger
 
-# Direktori untuk PID files dan state
-# Gunakan /var/run/midlab jika tersedia, fallback ke PROJECT_ROOT/run
+# Root project directory
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+# Nama file state (sama di lokasi persisten maupun legacy)
+STATE_FILENAME = "watchdog_state.json"
+
+
+def _pick_writable_dir(preferred: str, fallback: str) -> str:
+    """Pakai `preferred` kalau ada dan writable, kalau tidak jatuh ke fallback."""
+    if os.path.isdir(preferred) and os.access(preferred, os.W_OK):
+        return preferred
+    return fallback
+
+
+# Direktori PID file. /var/run = tmpfs, isinya memang boleh hilang tiap reboot.
 _DEFAULT_RUN_DIR = "/var/run/midlab"
-RUN_DIR = _DEFAULT_RUN_DIR if os.path.isdir(_DEFAULT_RUN_DIR) and os.access(_DEFAULT_RUN_DIR, os.W_OK) else os.path.join(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")), "run"
-)
-STATE_FILE = os.path.join(RUN_DIR, "watchdog_state.json")
+RUN_DIR = _pick_writable_dir(_DEFAULT_RUN_DIR, os.path.join(PROJECT_ROOT, "run"))
+
+# Direktori state watchdog. HARUS persisten: di sinilah flag auto_restart
+# disimpan, dan flag itu yang menentukan service alat nyala lagi setelah
+# server di-reboot. Dulu ini ikut di RUN_DIR (tmpfs) sehingga tiap reboot
+# semua flag hilang dan tidak ada satu pun service alat yang start otomatis.
+_DEFAULT_STATE_DIR = "/var/lib/midlab"
+STATE_DIR = _pick_writable_dir(_DEFAULT_STATE_DIR, RUN_DIR)
+STATE_FILE = os.path.join(STATE_DIR, STATE_FILENAME)
 
 # Path ke python interpreter
 PYTHON = sys.executable or "python3"
-
-# Root project directory
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 # Interval monitor loop (detik)
 MONITOR_INTERVAL = 10
@@ -54,7 +69,7 @@ class ServiceWatchdog:
     Auto-restart bisa di-toggle per service.
     """
 
-    def __init__(self):
+    def __init__(self, run_dir: str | None = None, state_dir: str | None = None):
         self._logger = get_logger("webconsole")
         self._config = Config()
 
@@ -62,8 +77,15 @@ class ServiceWatchdog:
         # {process, pid, start_time, auto_restart, instrument_id}
         self._services: dict[str, dict] = {}
 
-        # Pastikan direktori run ada
-        os.makedirs(RUN_DIR, exist_ok=True)
+        # run_dir = PID file (volatile), state_dir = state watchdog (persisten)
+        self._run_dir = run_dir or RUN_DIR
+        self._state_dir = state_dir or STATE_DIR
+        self._state_file = os.path.join(self._state_dir, STATE_FILENAME)
+        # Lokasi lama, sebelum state dipisah dari RUN_DIR
+        self._legacy_state_file = os.path.join(self._run_dir, STATE_FILENAME)
+
+        os.makedirs(self._run_dir, exist_ok=True)
+        os.makedirs(self._state_dir, exist_ok=True)
 
         # Load persisted state (auto_restart flags)
         self._load_state()
@@ -359,6 +381,11 @@ class ServiceWatchdog:
                         continue
 
                     if not self._is_process_alive(name):
+                        # Proses bisa saja masih hidup tapi lepas dari registry
+                        # (web console yang restart, bukan service-nya).
+                        if self._adopt_running_process(name):
+                            continue
+
                         instrument_id = info.get("instrument_id")
                         self._logger.warning(
                             f"Service {name} mati, auto-restarting..."
@@ -453,6 +480,120 @@ class ServiceWatchdog:
         except (ProcessLookupError, PermissionError):
             return False
 
+    @staticmethod
+    def _read_proc_cmdline(pid: int) -> str:
+        """Baca /proc/<pid>/cmdline sebagai string dipisah spasi."""
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                return f.read().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:
+            return ""
+
+    def _cmdline_matches(
+        self, service_name: str, pid: int, instrument_id: int = None
+    ) -> bool:
+        """
+        Cek PID benar-benar milik service ini, bukan proses lain yang kebetulan
+        mewarisi nomor PID yang sama (sangat mungkin setelah reboot).
+
+        Dicocokkan per-token, bukan substring: argumen `--instrument-id 1`
+        tidak boleh dianggap cocok dengan proses `--instrument-id 11`.
+        """
+        cmd = self._build_command(service_name, instrument_id)
+        if not cmd:
+            return False
+
+        # Path interpreter diabaikan (.venv/bin/python vs python3 bisa beda)
+        needle = cmd[1:]
+        tokens = self._read_proc_cmdline(pid).split()
+        if len(tokens) < len(needle):
+            return False
+
+        return any(
+            tokens[i:i + len(needle)] == needle
+            for i in range(len(tokens) - len(needle) + 1)
+        )
+
+    def _adopt_running_process(self, service_name: str) -> bool:
+        """
+        Ambil alih proses yang masih hidup berdasarkan PID file.
+
+        Dipakai saat web console sendiri di-restart (systemd Restart=always)
+        sementara service alat tetap jalan — proses anak sengaja dilepas dengan
+        start_new_session=True. Tanpa adopsi, watchdog menganggapnya mati lalu
+        spawn proses kedua untuk alat yang sama.
+        """
+        if self._is_virtual_service(service_name):
+            return False
+
+        info = self._services.get(service_name)
+        if info is None:
+            return False
+
+        pid = self._read_pid_file(service_name)
+        if not pid or not self._pid_exists(pid):
+            return False
+
+        if not self._cmdline_matches(service_name, pid, info.get("instrument_id")):
+            self._logger.info(
+                f"PID {pid} untuk {service_name} sudah dipakai proses lain, "
+                f"PID file diabaikan"
+            )
+            return False
+
+        info["process"] = None
+        info["pid"] = pid
+        # Perkiraan uptime: PID file ditulis tepat setelah proses dispawn.
+        try:
+            info["start_time"] = os.path.getmtime(self._pid_path(service_name))
+        except OSError:
+            info["start_time"] = time.time()
+
+        self._logger.info(f"Adopsi {service_name} yang masih running: PID={pid}")
+        return True
+
+    def adopt_running_services(self) -> list[str]:
+        """Adopsi semua service terdaftar yang prosesnya masih hidup."""
+        adopted = []
+        for name in list(self._services):
+            if self._is_process_alive(name):
+                continue
+            if self._adopt_running_process(name):
+                adopted.append(name)
+        return adopted
+
+    def autostart_enabled_services(self) -> dict:
+        """
+        Nyalakan service yang auto_restart=True tapi belum jalan.
+
+        Dipanggil sekali saat web console startup. Ini yang bikin service alat
+        hidup lagi sendiri setelah server reboot, tanpa nunggu satu siklus
+        monitor loop dan tanpa perlu klik Start manual di UI.
+        """
+        adopted = self.adopt_running_services()
+        started, failed = [], []
+
+        for name, info in list(self._services.items()):
+            if self._is_virtual_service(name):
+                continue
+            if not info.get("auto_restart", False):
+                continue
+            if self._is_process_alive(name):
+                continue
+
+            result = self.start_service(name, info.get("instrument_id"))
+            if isinstance(result, dict) and result.get("success"):
+                started.append(name)
+            else:
+                failed.append(name)
+
+        if adopted or started or failed:
+            self._logger.info(
+                f"Autostart: started={started or '-'} "
+                f"adopted={adopted or '-'} failed={failed or '-'}"
+            )
+        return {"started": started, "adopted": adopted, "failed": failed}
+
     def _cleanup_service(self, service_name: str):
         """
         Bersihkan state service setelah stop.
@@ -463,7 +604,7 @@ class ServiceWatchdog:
         list_services (sekali dari watchdog status, sekali dari virtual loop).
         """
         # Hapus PID file (selalu, terlepas dari entry registry)
-        pid_path = os.path.join(RUN_DIR, f"{service_name}.pid")
+        pid_path = self._pid_path(service_name)
         try:
             os.remove(pid_path)
         except FileNotFoundError:
@@ -492,15 +633,17 @@ class ServiceWatchdog:
             "log_file": None,
         }
 
+    def _pid_path(self, service_name: str) -> str:
+        return os.path.join(self._run_dir, f"{service_name}.pid")
+
     def _write_pid_file(self, service_name: str, pid: int):
         """Tulis PID ke file."""
-        pid_path = os.path.join(RUN_DIR, f"{service_name}.pid")
-        with open(pid_path, "w") as f:
+        with open(self._pid_path(service_name), "w") as f:
             f.write(str(pid))
 
     def _read_pid_file(self, service_name: str) -> int | None:
         """Baca PID dari file."""
-        pid_path = os.path.join(RUN_DIR, f"{service_name}.pid")
+        pid_path = self._pid_path(service_name)
         try:
             with open(pid_path, "r") as f:
                 return int(f.read().strip())
@@ -520,16 +663,36 @@ class ServiceWatchdog:
                 "instrument_id": info.get("instrument_id"),
             }
         try:
-            with open(STATE_FILE, "w") as f:
+            with open(self._state_file, "w") as f:
                 json.dump(state, f, indent=2)
         except Exception as e:
             self._logger.warning(f"Gagal simpan watchdog state: {e}")
 
+    def _read_state_file(self) -> dict | None:
+        """
+        Baca state dari lokasi persisten; kalau belum ada, coba lokasi legacy
+        (RUN_DIR) supaya deployment existing tidak kehilangan flag auto_restart
+        saat upgrade. Return None kalau dua-duanya tidak ada.
+        """
+        for path in (self._state_file, self._legacy_state_file):
+            try:
+                with open(path, "r") as f:
+                    state = json.load(f)
+            except FileNotFoundError:
+                continue
+            if path != self._state_file:
+                self._logger.info(
+                    f"Migrasi watchdog state {path} → {self._state_file}"
+                )
+            return state
+        return None
+
     def _load_state(self):
         """Load persisted state dari file JSON."""
         try:
-            with open(STATE_FILE, "r") as f:
-                state = json.load(f)
+            state = self._read_state_file()
+            if state is None:
+                return
             purged = 0
             for name, data in state.items():
                 # Self-heal: skip entry virtual (orphan dari bug lama).
@@ -548,11 +711,10 @@ class ServiceWatchdog:
                 f"Loaded watchdog state: {len(self._services)} services"
                 + (f" (purged {purged} virtual orphan)" if purged else "")
             )
-            if purged:
-                # Tulis ulang state file tanpa entri virtual.
+            if purged or not os.path.exists(self._state_file):
+                # Tulis ulang tanpa entri virtual, sekaligus menuntaskan
+                # migrasi dari lokasi legacy ke lokasi persisten.
                 self._save_state()
-        except FileNotFoundError:
-            pass
         except Exception as e:
             self._logger.warning(f"Gagal load watchdog state: {e}")
 
@@ -560,17 +722,35 @@ class ServiceWatchdog:
     # Registration Helpers
     # ============================================================
 
-    def register_service(self, service_name: str, instrument_id: int = None):
-        """Register service ke watchdog (tanpa start)."""
-        if service_name not in self._services:
+    def register_service(
+        self,
+        service_name: str,
+        instrument_id: int = None,
+        auto_restart: bool = False,
+    ):
+        """
+        Register service ke watchdog (tanpa start).
+
+        `auto_restart` hanya dipakai sebagai nilai default untuk entry baru.
+        Entry yang sudah ada — termasuk hasil load state persisten — tidak
+        ditimpa, supaya operator yang sengaja mematikan auto-restart tidak
+        dinyalakan ulang tiap web console restart.
+        """
+        existing = self._services.get(service_name)
+        if existing is None:
             self._services[service_name] = {
                 "process": None,
                 "pid": None,
                 "start_time": None,
-                "auto_restart": False,
+                "auto_restart": auto_restart,
                 "instrument_id": instrument_id,
                 "log_file": None,
             }
+            return
+
+        # Lengkapi instrument_id kalau state lama menyimpannya sebagai null.
+        if existing.get("instrument_id") is None and instrument_id is not None:
+            existing["instrument_id"] = instrument_id
 
     def register_instrument_services(
         self,
@@ -584,12 +764,18 @@ class ServiceWatchdog:
         - lis_bridge_<id> → hanya untuk alat di lis_bridge_ids (yaitu yang
           lis_bridge_enabled=1). Tanpa registrasi ini, bridge tidak muncul
           di GET /api/services sehingga UI tidak punya tombol Start-nya.
+
+        Default auto_restart=True: alat yang is_active=1 di DB memang
+        diharapkan selalu tersambung, jadi service-nya harus nyala sendiri
+        setelah reboot maupun saat alat baru ditambahkan.
         """
         for iid in instrument_ids:
-            self.register_service(f"tcp_{iid}", instrument_id=iid)
+            self.register_service(f"tcp_{iid}", instrument_id=iid, auto_restart=True)
 
         for iid in lis_bridge_ids or []:
-            self.register_service(f"lis_bridge_{iid}", instrument_id=iid)
+            self.register_service(
+                f"lis_bridge_{iid}", instrument_id=iid, auto_restart=True
+            )
 
     def ensure_core_services(self):
         """Pastikan core services (result_sender, order_receiver) terdaftar."""
