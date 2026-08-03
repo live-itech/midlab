@@ -21,7 +21,7 @@ ORR^O02 sebagai `20081120175238` — timestamp beku dari 2008 yang jelas bug
 lab saat pesan dibuat. Alat tidak memvalidasi field ini.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from itertools import count
 
 from lib.utils import get_logger
@@ -41,6 +41,7 @@ from protocols.mindray_bc5150.constants import (
     OBR_FIELD_PLACER_SAMPLE_ID, OBR_FIELD_SERVICE_ID, OBR_FIELD_DRAW_TIME,
     OBR_FIELD_SENDER, OBR_FIELD_CLINICAL_INFO, OBR_FIELD_RECEIVED_TIME,
     OBR_FIELD_SERVICE_SECTION, OBR_FIELD_INTERPRETER, OBR_FIELD_COUNT,
+    DRAW_TIME_SAFETY_MARGIN_SECONDS,
     OBX_CODE_BLOOD_MODE, OBX_CODE_TEST_MODE, OBX_CODE_AGE, OBX_CODE_REMARK,
     BLOOD_MODE_BY_SAMPLE_TYPE, VALID_TEST_MODES, AGE_UNIT_YEAR,
     VALUE_TYPE_CODED, VALUE_TYPE_NUMERIC, VALUE_TYPE_STRING,
@@ -412,18 +413,44 @@ class MindrayBC5150Builder:
         1. `specimen.collected_at` — jam flebotomi asli dari LIS.
         2. `request_datetime` — jam order dibuat; selisihnya menit dan alat
            memakainya untuk peringatan umur sampel, jadi cukup akurat.
-        3. Jam lab saat worklist dibangun — sampel baru saja diambil bila
-           alat menanyakannya sekarang.
+        3. Batas aman itu sendiri — sampel baru saja diambil bila alat
+           menanyakannya sekarang.
+
+        Berapa pun sumbernya, hasilnya tidak pernah melewati batas aman: alat
+        menolak draw time yang lebih baru dari jam internalnya, dan jamnya
+        tertinggal dari jam server (lihat DRAW_TIME_SAFETY_MARGIN_SECONDS).
         """
         order = order or {}
         specimen = order.get("specimen") or {}
+        limit = self._draw_time_limit()
 
         for candidate in (specimen.get("collected_at"),
                           order.get("request_datetime")):
             stamp = to_hl7_timestamp(candidate or "")
             if stamp:
-                return stamp
-        return self._now()
+                # Keduanya `YYYYMMDDHHMMSS`, jadi urutan leksikal = kronologis.
+                return min(stamp[:14], limit) if limit else stamp
+        return limit or self._now()
+
+    def _draw_time_limit(self) -> str:
+        """
+        Draw time termuda yang masih diterima alat: jam lab dikurangi margin
+        aman, dibulatkan turun ke menit.
+
+        Pembulatan mengikuti alat — ia memotong detik ke `:00` saat menyimpan,
+        jadi nilai di layarnya sama persis dengan yang dikirim.
+
+        String kosong bila jam tidak terbaca; pemanggil jatuh ke perilaku lama
+        (kirim apa adanya) daripada mengosongkan OBR-6, yang pasti ditolak.
+        """
+        try:
+            now = datetime.strptime(self._now()[:14], "%Y%m%d%H%M%S")
+        except (TypeError, ValueError):
+            logger.warning("jam lab tidak terbaca, draw time dikirim apa adanya")
+            return ""
+
+        safe = now - timedelta(seconds=DRAW_TIME_SAFETY_MARGIN_SECONDS)
+        return safe.replace(second=0).strftime("%Y%m%d%H%M%S")
 
     def _build_obr(self, order: dict, sample_id: str) -> str:
         """

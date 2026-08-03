@@ -162,6 +162,20 @@ OBR_FIELD_COUNT = 32
 
 DIAGNOSTIC_SERV_HEMATOLOGY = "HM"
 
+# Seberapa jauh draw time (OBR-6) dimundurkan dari jam server.
+#
+# Alat menolak draw time yang lebih baru dari jam internalnya sendiri: operator
+# menekan OK di dialog info sampel dan muncul error draw time, worklist masuk
+# tanpa jam pengambilan. Jam BC-5150 tertinggal dari jam server — terukur +77
+# detik (28 Jul 2026) dan +90 detik (3 Agu 2026) di tcp_1.comm.log, melar ~2
+# detik/hari — jadi jam server apa adanya, maupun `request_datetime` yang cuma
+# berjarak detik, selalu jatuh di masa depan menurut alat.
+#
+# 5 menit dipilih supaya menutupi skew terukur berikut drift bertahun tanpa
+# perlu menyetel ulang jam alat, sementara alat tetap membaca sampel sebagai
+# baru diambil (peringatan umur sampel BC-5150 bekerja dalam orde jam).
+DRAW_TIME_SAFETY_MARGIN_SECONDS = 300
+
 
 # ============================================================
 # OBR-4 — jenis analisis (dok §5.7 Tabel 4-10)

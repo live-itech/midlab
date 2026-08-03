@@ -475,10 +475,12 @@ def test_draw_time_jatuh_ke_request_datetime_bila_collected_at_kosong(mod):
 
 
 def test_draw_time_jatuh_ke_jam_lab_bila_order_tanpa_waktu_sama_sekali(mod):
+    """Jam lab dikurangi margin aman, bukan jam sekarang persis — lihat blok
+    clock skew di bawah."""
     mod._builder = MindrayBC5150Builder(now=_fixed_clock("20141105151358"))
     order = dict(ORDER, request_datetime="",
                  specimen={"sample_id": "257", "sample_type": "whole blood"})
-    assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20141105151358"
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20141105150800"
 
 
 def test_draw_time_ber_offset_dikonversi_ke_jam_lab(mod):
@@ -506,6 +508,54 @@ def test_timestamp_tanpa_offset_tetap_dibaca_sebagai_jam_lab(mod):
     from protocols.mindray_bc5150.builder import to_hl7_timestamp
     assert to_hl7_timestamp("20190504060725") == "20190504060725"
     assert to_hl7_timestamp("19950804") == "19950804000000"
+
+
+# ============================================================
+# Draw time vs jam alat yang tertinggal (clock skew)
+#
+# Jam BC-5150 di lapangan tertinggal dari jam server: terukur +77 detik pada
+# 28 Jul 2026 dan +90 detik pada 3 Agu 2026 (152 pesan masuk, tcp_1.comm.log),
+# jadi melar ~2 detik/hari dan menyetel ulang jam alat tidak menyelesaikan.
+#
+# Alat menolak draw time yang lebih baru dari jamnya sendiri: dari 9 worklist
+# yang terkirim, 5 yang draw time-nya di depan jam alat kembali dengan OBR-6
+# kosong (operator melihat dialog "invalid draw time"), 4 yang di belakang
+# diterima. Karena itu draw time dimundurkan dengan margin aman.
+# ============================================================
+
+def test_draw_time_dimundurkan_bila_melewati_batas_aman(mod):
+    """
+    `request_datetime` dari EazyApp hanya berjarak detik dari saat worklist
+    dibangun, jadi menurut jam alat ia jatuh di masa depan dan ditolak.
+    """
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20141105151358"))
+    order = dict(ORDER, request_datetime="20141105151350")
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20141105150800"
+
+
+def test_draw_time_di_masa_lalu_tidak_digeser(mod):
+    """Jam flebotomi asli dari LIS sudah aman — jangan dipalsukan."""
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20141105151358"))
+    order = dict(ORDER, specimen=dict(ORDER["specimen"],
+                                      collected_at="20141105144537"))
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20141105144537"
+
+
+def test_draw_time_hasil_clamp_dibulatkan_ke_menit(mod):
+    """Alat memotong detik ke `:00` saat menyimpan; kirim bentuk yang sama
+    supaya nilai di layar alat sama persis dengan yang dikirim."""
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20141105151358"))
+    order = dict(ORDER, request_datetime="", specimen={"sample_id": "257"})
+    assert _obr(mod.format_query_response(order, INSTRUMENT))[6].endswith("00")
+
+
+def test_draw_time_batas_aman_menutupi_skew_alat(mod):
+    """
+    Margin harus lebih besar dari skew terukur (90 detik) dengan ruang untuk
+    drift bertahun. Nilai di bawah batas ini membuat bug-nya kambuh.
+    """
+    from protocols.mindray_bc5150.constants import DRAW_TIME_SAFETY_MARGIN_SECONDS
+    assert DRAW_TIME_SAFETY_MARGIN_SECONDS >= 300
 
 
 def test_pv1_hanya_dibangun_bila_ada_lokasi(mod):
