@@ -268,7 +268,13 @@ TEST_MODE_CBC_DIFF = "CBC+DIFF"       # (log) varian firmware
 VALID_TEST_MODES = {TEST_MODE_CBC, TEST_MODE_CBC_5DIFF, TEST_MODE_CBC_DIFF}
 
 # Satuan umur pada OBX 30525-0 (dok §5.9)
+#
+# `mo` bukan dari dok melainkan dari alat sendiri: ORU-nya melaporkan umur bayi
+# dalam bulan (log 4 Agu 2026 — `OBX|5|NM|30525-0^Age^LN||4|mo`), jadi satuan
+# ini pasti dikenali firmware. Satuan hari/jam belum pernah terlihat; jangan
+# dikirim sebelum diverifikasi di alat fisik.
 AGE_UNIT_YEAR = "yr"
+AGE_UNIT_MONTH = "mo"
 
 # Nilai OBX-5 pada alarm morfologi bertipe IS
 CODED_TRUE = "T"

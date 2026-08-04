@@ -43,7 +43,8 @@ from protocols.mindray_bc5150.constants import (
     OBR_FIELD_SERVICE_SECTION, OBR_FIELD_INTERPRETER, OBR_FIELD_COUNT,
     DRAW_TIME_SAFETY_MARGIN_SECONDS,
     OBX_CODE_BLOOD_MODE, OBX_CODE_TEST_MODE, OBX_CODE_AGE, OBX_CODE_REMARK,
-    BLOOD_MODE_BY_SAMPLE_TYPE, VALID_TEST_MODES, AGE_UNIT_YEAR,
+    BLOOD_MODE_BY_SAMPLE_TYPE, VALID_TEST_MODES,
+    AGE_UNIT_YEAR, AGE_UNIT_MONTH,
     VALUE_TYPE_CODED, VALUE_TYPE_NUMERIC, VALUE_TYPE_STRING,
     OBSERVATION_STATUS_FINAL,
 )
@@ -132,28 +133,50 @@ def _padded_segment(name: str, assignments: dict, field_count: int) -> str:
     return FIELD_SEPARATOR.join(fields)
 
 
-def age_in_years(dob: str, today: str) -> str:
+def patient_age(dob: str, today: str) -> tuple:
     """
-    Hitung umur penuh dalam tahun dari `dob` terhadap tanggal `today`.
+    Hitung umur dari `dob` terhadap tanggal `today` sebagai `(nilai, satuan)`.
 
-    Dua-duanya `YYYYMMDD...`; string kosong bila dob tidak bisa dibaca. Umur
-    dikirim karena BC-5150 memakainya untuk memilih reference group — hasil
-    pasien anak akan dinilai terhadap range dewasa bila field ini kosong.
+    Dua-duanya `YYYYMMDD...`; `("", "")` bila umur tidak bisa dinyatakan sebagai
+    bilangan bulat positif dalam satuan yang dikenal alat. Umur dikirim karena
+    BC-5150 memakainya untuk memilih reference group — hasil pasien anak akan
+    dinilai terhadap range dewasa bila field ini kosong.
+
+    Satuan dipilih sebesar mungkin yang masih menghasilkan nilai ≥ 1:
+
+        ≥ 1 tahun   → `yr`
+        1..11 bulan → `mo`
+        < 1 bulan   → tidak dikirim
+
+    Nol tidak pernah dikirim. Versi sebelumnya membulatkan semua bayi jadi
+    `0 yr`, dan alat menolaknya: operator menekan OK di dialog info sampel,
+    muncul "invalid age", sampel tidak bisa dijalankan sampai umurnya diketik
+    ulang manual (log 4 Agu 2026, sampel 9097415 — bayi 3 hari; operator
+    akhirnya memundurkan tanggal lahir satu tahun supaya alat mau jalan).
+
+    Neonatus di bawah sebulan sengaja dilewati, bukan dipaksa jadi `1 mo`:
+    umur palsu memilih reference group yang salah, sementara PID-7 tetap
+    membawa tanggal lahir asli sehingga alat bisa menurunkannya sendiri.
     """
     dob_digits = to_hl7_timestamp(dob, pad=False)
     if len(dob_digits) < 8 or len(today) < 8:
-        return ""
+        return "", ""
 
     try:
         born = (int(dob_digits[0:4]), int(dob_digits[4:6]), int(dob_digits[6:8]))
         now = (int(today[0:4]), int(today[4:6]), int(today[6:8]))
     except ValueError:
-        return ""
+        return "", ""
 
-    years = now[0] - born[0] - ((now[1], now[2]) < (born[1], born[2]))
-    if years < 0 or years > 150:
-        return ""
-    return str(years)
+    # Ulang tahun (bulanan maupun tahunan) yang belum lewat tidak dihitung.
+    months = (now[0] - born[0]) * 12 + (now[1] - born[1]) - (now[2] < born[2])
+    if months < 0 or months > 150 * 12:
+        return "", ""
+    if months >= 12:
+        return str(months // 12), AGE_UNIT_YEAR
+    if months >= 1:
+        return str(months), AGE_UNIT_MONTH
+    return "", ""
 
 
 class MindrayBC5150Builder:
@@ -498,9 +521,9 @@ class MindrayBC5150Builder:
         if test_mode:
             entries.append((VALUE_TYPE_CODED, OBX_CODE_TEST_MODE, test_mode, ""))
 
-        age = age_in_years((patient or {}).get("dob", ""), self._now())
+        age, age_unit = patient_age((patient or {}).get("dob", ""), self._now())
         if age:
-            entries.append((VALUE_TYPE_NUMERIC, OBX_CODE_AGE, age, AGE_UNIT_YEAR))
+            entries.append((VALUE_TYPE_NUMERIC, OBX_CODE_AGE, age, age_unit))
 
         remark = order.get("remark", "")
         if remark:

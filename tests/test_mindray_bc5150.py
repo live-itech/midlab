@@ -423,6 +423,77 @@ def test_obx_menghitung_umur_dari_tanggal_lahir(orr):
     assert age[6] == "yr"
 
 
+def test_obx_umur_bayi_dikirim_dalam_bulan(mod):
+    """
+    Umur di bawah setahun dibulatkan jadi `0 yr` oleh versi sebelumnya, dan
+    alat menolaknya ("invalid age") saat operator menekan OK di dialog info
+    sampel — sampel tidak bisa dijalankan sampai umur diperbaiki manual.
+
+    `mo` bukan tebakan: alat sendiri mengirimnya di ORU (log 4 Agu 2026,
+    sampel 4236130 → `OBX|5|NM|30525-0^Age^LN||4|mo`).
+    """
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20260804153559"))
+    order = dict(ORDER, patient=dict(ORDER["patient"], dob="20260401"))
+    age = next(s for s in _segments(mod.format_query_response(order, INSTRUMENT))["OBX"]
+               if s[3] == "30525-0^Age^LN")
+    assert age[5] == "4"
+    assert age[6] == "mo"
+
+
+def test_obx_umur_tidak_dikirim_untuk_bayi_di_bawah_sebulan(mod):
+    """
+    Neonatus (log 4 Agu 2026, sampel 9097415 — lahir 1 Agu, diperiksa 4 Agu)
+    tidak punya umur bulat dalam satuan yang terverifikasi. Satuan hari/jam
+    belum pernah terlihat dikirim alat, jadi OBX umur dilewati saja dan alat
+    memakai PID-7 — lebih aman daripada mengirim `0 yr` yang bikin sampel
+    tidak bisa dijalankan.
+    """
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20260804153559"))
+    order = dict(ORDER, patient=dict(ORDER["patient"], dob="20260801"))
+    out = mod.format_query_response(order, INSTRUMENT)
+    assert b"30525-0^Age^LN" not in out
+    # Tanggal lahir tetap dikirim: alat masih bisa menurunkan umurnya sendiri.
+    assert _segments(out)["PID"][0][7] == "20260801000000"
+
+
+def test_obx_umur_tidak_pernah_bernilai_nol(mod):
+    """
+    Nol adalah satu-satunya nilai yang pasti ditolak alat, berapa pun
+    satuannya — kunci lewat rentang tanggal, bukan satu contoh.
+    """
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20260804153559"))
+    for dob in ("20260804", "20260803", "20260715", "20260705", "20260201"):
+        order = dict(ORDER, patient=dict(ORDER["patient"], dob=dob))
+        seg = _segments(mod.format_query_response(order, INSTRUMENT))
+        for obx in seg["OBX"]:
+            if obx[3] == "30525-0^Age^LN":
+                assert obx[5] not in ("", "0"), f"umur nol terkirim untuk dob={dob}"
+
+
+def test_obx_umur_bulan_dihitung_penuh(mod):
+    """Ulang tahun bulanan yang belum lewat tidak boleh dibulatkan ke atas."""
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20260804153559"))
+
+    order = dict(ORDER, patient=dict(ORDER["patient"], dob="20260704"))
+    age = next(s for s in _segments(mod.format_query_response(order, INSTRUMENT))["OBX"]
+               if s[3] == "30525-0^Age^LN")
+    assert (age[5], age[6]) == ("1", "mo")     # genap sebulan tepat hari ini
+
+    # Sehari lebih muda: belum genap sebulan, jadi umur tidak dikirim.
+    order = dict(ORDER, patient=dict(ORDER["patient"], dob="20260705"))
+    assert b"30525-0^Age^LN" not in mod.format_query_response(order, INSTRUMENT)
+
+
+def test_obx_umur_setahun_lebih_tetap_dalam_tahun(mod):
+    """Batas atas satuan bulan: 12 bulan dilaporkan sebagai 1 tahun."""
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20260804153559"))
+    order = dict(ORDER, patient=dict(ORDER["patient"], dob="20250801"))
+    age = next(s for s in _segments(mod.format_query_response(order, INSTRUMENT))["OBX"]
+               if s[3] == "30525-0^Age^LN")
+    assert age[5] == "1"
+    assert age[6] == "yr"
+
+
 def test_test_mode_tidak_dikirim_bila_order_tidak_menyebutnya(mod):
     """Menebak mode pemeriksaan lebih berbahaya daripada membiarkan default alat."""
     order = dict(ORDER, tests=[{"test_code": "XYZ", "test_name": "Panel Lain"}])
