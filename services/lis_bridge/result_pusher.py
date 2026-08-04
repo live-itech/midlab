@@ -29,9 +29,34 @@ _STATUS_MAP = {
 }
 
 # Nama protocol internal MidLab → wire protocol yang dikenal EazyApp.
+# Kontrak EazyApp minta KELUARGA protokol ("ASTM"/"HL7"), bukan nama driver,
+# dan membatasi field ini 20 karakter (docs/API.md:261).
 _PROTOCOL_MAP = {
     "COBAS_C111": "ASTM",
 }
+
+# Prefix nama driver → keluarga protokol. Dipakai sebagai aturan umum supaya
+# driver baru (HL7_SD_BIOSENSOR_F2400, dst) tidak perlu didaftarkan satu per
+# satu — dulu nama driver diteruskan apa adanya dan yang >20 karakter kena
+# HTTP 422 sehingga result mandek permanen.
+_PROTOCOL_FAMILY_PREFIXES = ("HL7", "ASTM")
+
+# Batas panjang kolom `protocol` di sisi EazyApp.
+_PROTOCOL_MAX_LEN = 20
+
+
+def _normalize_protocol(raw: str) -> str:
+    """Nama protocol internal → keluarga protokol wire EazyApp."""
+    proto = (raw or "").upper()
+    if not proto:
+        return "ASTM"
+    if proto in _PROTOCOL_MAP:
+        return _PROTOCOL_MAP[proto]
+    for family in _PROTOCOL_FAMILY_PREFIXES:
+        if proto.startswith(family):
+            return family
+    # Tak dikenal: jangan sampai kena 422 lagi — potong ke batas kontrak.
+    return proto[:_PROTOCOL_MAX_LEN]
 
 # Pseudo-result yang dihasilkan parser tapi bukan hasil klinis pasien
 # (kalibrasi, absorbansi mentah). Tidak boleh dikirim ke EazyApp.
@@ -87,9 +112,8 @@ def build_mid_payload(result_row, instrument) -> dict:
         iso_mdt = timeutil.isoformat(result_row.received_at) or timeutil.isoformat()
     payload["message_datetime"] = iso_mdt
 
-    # protocol: map nama internal → wire protocol EazyApp.
-    proto = (payload.get("protocol") or "").upper()
-    payload["protocol"] = _PROTOCOL_MAP.get(proto, proto or "ASTM")
+    # protocol: nama driver internal → keluarga protokol wire EazyApp.
+    payload["protocol"] = _normalize_protocol(payload.get("protocol"))
 
     # specimen.collected_at → ISO8601.
     spec = payload.get("specimen")

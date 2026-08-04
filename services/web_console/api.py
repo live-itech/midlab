@@ -1616,21 +1616,34 @@ class _TapRunner:
     def __init__(self):
         self._sesi: dict = {}    # id → (TapSession, asyncio.Task)
 
-    def start(self, row_id, transport, basis, mode) -> None:
+    def start(self, row_id, transport, basis, mode, baseline=None) -> None:
+        """
+        Jalankan sesi. `baseline` diisi saat MELANJUTKAN sesi yang sudah pernah
+        berhenti — hitungan lamanya ditambahkan, bukan ditimpa.
+        """
         async def jalan():
             path = session_log_path(row_id)
-            await transport.open()
-            with TapRecorder(path) as rec:
-                tap = TapSession(transport, basis, rec, mode=mode)
-                self._sesi[row_id] = (tap, asyncio.current_task())
-                try:
+            tap = None
+            try:
+                # open() ikut di dalam try: kalau alat tidak menyahut (tcp_client)
+                # atau port serial tidak ada, dulu exception-nya lolos dari task
+                # dan barisnya menyangkut 'running' selamanya — tombol Start pun
+                # jadi mati karena dianggap masih jalan.
+                await transport.open()
+                with TapRecorder(path) as rec:
+                    tap = TapSession(transport, basis, rec, mode=mode)
+                    self._sesi[row_id] = (tap, asyncio.current_task())
                     await tap.run()
-                    status, err = "stopped", None
-                except Exception as e:
-                    status, err = "error", str(e)
-                finally:
-                    tap_service._simpan_hasil(row_id, tap, status, err)
-                    self._sesi.pop(row_id, None)
+                status, err = "stopped", None
+            except Exception as e:
+                status, err = "error", str(e)
+                try:
+                    await transport.close()
+                except Exception:
+                    pass          # sudah gagal; kegagalan menutup tak menambah info
+            finally:
+                tap_service._simpan_hasil(row_id, tap, status, err, baseline=baseline)
+                self._sesi.pop(row_id, None)
 
         asyncio.create_task(jalan())
 
@@ -1724,6 +1737,69 @@ async def create_tap_session(body: TapSessionCreate, x_api_key: str = Header(Non
             response_mode=row.response_mode, status=row.status,
             bytes_rx=0, bytes_tx=0, message_count=0,
             started_at=row.started_at.isoformat(), stopped_at=None,
+        )
+    finally:
+        session.close()
+
+
+@app.post("/api/tap/sessions/{session_id}/start", response_model=TapSessionResponse)
+async def start_tap_session(session_id: int, x_api_key: str = Header(None)):
+    """
+    Lanjutkan sesi tap yang sudah berhenti — config dan capture-nya dipakai ulang.
+
+    Capture untuk membuat driver jarang selesai sekali duduk: alat dinyalakan
+    lagi besoknya dan operator ingin menyambung rekaman yang sama. Baris yang
+    sama dipakai ulang supaya seluruh capture tetap di satu file JSONL (event
+    baru di-append), jadi export fixture tetap satu potong.
+    """
+    _verify_api_key(x_api_key)
+    if _TAP_RUNNER.get(session_id) is not None:
+        raise HTTPException(409, f"Sesi tap #{session_id} sedang berjalan")
+
+    session = DBManager().get_session()
+    try:
+        row = session.get(TblTapSession, session_id)
+        if row is None:
+            raise HTTPException(404, f"Sesi tap #{session_id} tidak ada")
+
+        # Status 'running' tanpa task = baris yatim (web console pernah restart).
+        # Itu justru kasus yang harus bisa di-start lagi, jadi tidak ditolak.
+        try:
+            transport = tap_service.transport_from_row(row)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+        if row.transport == "tcp_server":
+            try:
+                tap_service.check_port_free(transport.port, session)
+            except tap_service.TapPortConflict as e:
+                raise HTTPException(409, str(e))
+
+        baseline = {
+            "bytes_rx": row.bytes_rx or 0,
+            "bytes_tx": row.bytes_tx or 0,
+            "message_count": row.message_count or 0,
+        }
+
+        row.status = "running"
+        row.error_message = None
+        row.stopped_at = None
+        session.commit()
+
+        _TAP_RUNNER.start(
+            row.id, transport, row.protocol_basis, row.response_mode,
+            baseline=baseline,
+        )
+
+        return TapSessionResponse(
+            id=row.id, name=row.name, transport=row.transport, target=row.target,
+            protocol_basis=row.protocol_basis,
+            detected_protocol=row.detected_protocol,
+            response_mode=row.response_mode, status=row.status,
+            bytes_rx=baseline["bytes_rx"], bytes_tx=baseline["bytes_tx"],
+            message_count=baseline["message_count"],
+            started_at=row.started_at.isoformat() if row.started_at else None,
+            stopped_at=None,
         )
     finally:
         session.close()

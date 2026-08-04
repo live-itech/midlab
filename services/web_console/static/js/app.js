@@ -446,7 +446,12 @@ const Tap = {
         <td>${r.bytes_rx}</td>
         <td>${r.bytes_tx}</td>
         <td>${r.message_count}</td>
-        <td><button class="btn btn-sm" data-tap-open="${r.id}">Buka</button></td>
+        <td class="tap-actions">
+          ${r.status === 'running' ? '' : `
+            <button class="btn btn-sm" data-tap-start="${r.id}"
+                    title="Lanjut tapping — config &amp; capture yang sama">Start</button>`}
+          <button class="btn btn-sm" data-tap-open="${r.id}">Buka</button>
+        </td>
       </tr>
     `).join('');
   },
@@ -502,6 +507,23 @@ const Tap = {
       es.close();
       this.muatDaftar();
     });
+  },
+
+  // Jalankan lagi sesi yang sudah berhenti: config dan file capture-nya dipakai
+  // ulang, jadi rekaman lama tersambung — bukan bikin sesi baru.
+  async lanjutkan(id, btn) {
+    btn.disabled = true;
+    try {
+      await App.api(`/api/tap/sessions/${id}/start`, { method: 'POST' });
+      await this.muatDaftar();
+      this.buka(id);
+      App.toast(`Sesi #${id} lanjut merekam`, 'success');
+    } catch (err) {
+      // Termasuk 409 saat port dipakai alat aktif, dan 400 saat target lama
+      // tidak bisa dibaca lagi.
+      App.toast(err.message, 'error');
+      btn.disabled = false;
+    }
   },
 
   async kirimManual() {
@@ -641,8 +663,10 @@ const Tap = {
     };
 
     document.getElementById('tap-list').onclick = e => {
-      const id = e.target.dataset.tapOpen;
-      if (id) this.buka(parseInt(id, 10));
+      const idBuka = e.target.dataset.tapOpen;
+      if (idBuka) this.buka(parseInt(idBuka, 10));
+      const idStart = e.target.dataset.tapStart;
+      if (idStart) this.lanjutkan(parseInt(idStart, 10), e.target);
     };
 
     document.getElementById('tap-stop').onclick = () =>
