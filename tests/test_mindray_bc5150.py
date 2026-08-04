@@ -451,8 +451,9 @@ def test_blood_mode_mengenali_sample_type_bahasa_indonesia(mod):
 # Draw time (OBR-6)
 #
 # BC-5150 menolak worklist dengan draw time kosong: operator menekan OK di
-# dialog info sampel dan alat memunculkan error draw time. EazyApp belum
-# mengirim `specimen.collected_at`, jadi builder harus punya rantai fallback.
+# dialog info sampel dan alat memunculkan error draw time. Sejak 4 Agu 2026
+# EazyApp mengirim `specimen.collected_at`, tapi order lama maupun LIS lain
+# bisa tetap mengosongkannya — rantai fallback tetap dipertahankan.
 # ============================================================
 
 def _obr(message: bytes) -> list:
@@ -492,6 +493,33 @@ def test_draw_time_ber_offset_dikonversi_ke_jam_lab(mod):
     order = dict(ORDER, specimen=dict(ORDER["specimen"],
                                       collected_at="2026-08-01T06:49:18+00:00"))
     assert _obr(mod.format_query_response(order, INSTRUMENT))[6] == "20260801134918"
+
+
+def test_draw_time_memakai_collected_at_dari_payload_eazyapp_asli(mod):
+    """
+    Payload EazyApp apa adanya (GET /orders/pending, 4 Agu 2026): jam
+    flebotomi ber-offset UTC dan berumur beberapa hari.
+
+    Yang dikunci di sini: nilainya dipakai — bukan `request_datetime` yang
+    hanya berjarak detik dari saat worklist dibangun — dikonversi ke jam
+    dinding lab (13:47 UTC → 20:47 WIB), dan tidak ikut dimundurkan margin
+    aman karena sudah lampau menurut jam alat.
+    """
+    mod._builder = MindrayBC5150Builder(now=_fixed_clock("20260804105541"))
+    order = {
+        "mid_version": "1.0",
+        "order_id": "LAB-20260801-0003",
+        "request_datetime": "2026-08-04T03:50:26+00:00",
+        "patient": {"patient_id": "MRN-20260801-0001", "name": "testing",
+                    "dob": "2009-06-23", "gender": "F"},
+        "specimen": {"sample_id": "5505629", "sample_type": "Darah Vena",
+                     "collected_at": "2026-08-01T13:47:00+00:00",
+                     "priority": "routine"},
+        "tests": [{"test_code": "HGB", "test_name": "HGB"}],
+    }
+    obr = _obr(mod.format_query_response(order, INSTRUMENT))
+    assert obr[6] == "20260801204700"
+    assert obr[14] == "20260804105026"     # OBR-14 tetap jam order dibuat
 
 
 def test_received_time_ber_offset_dikonversi_ke_jam_lab(mod):

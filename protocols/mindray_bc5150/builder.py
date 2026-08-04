@@ -410,7 +410,8 @@ class MindrayBC5150Builder:
         manual tiap sampel. Karena itu field ini tidak pernah dikirim kosong.
 
         Urutan sumber, dari yang paling benar:
-        1. `specimen.collected_at` — jam flebotomi asli dari LIS.
+        1. `specimen.collected_at` — jam flebotomi asli dari LIS; EazyApp
+           mengirimnya sejak 4 Agu 2026, dalam UTC ber-offset.
         2. `request_datetime` — jam order dibuat; selisihnya menit dan alat
            memakainya untuk peringatan umur sampel, jadi cukup akurat.
         3. Batas aman itu sendiri — sampel baru saja diambil bila alat
