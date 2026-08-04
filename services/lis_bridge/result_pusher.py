@@ -33,6 +33,10 @@ _STATUS_MAP = {
 # dan membatasi field ini 20 karakter (docs/API.md:261).
 _PROTOCOL_MAP = {
     "COBAS_C111": "ASTM",
+    # Format proprietary <<<...>>>, bukan keluarga ASTM maupun HL7. Dipetakan
+    # ke ASTM karena kontrak hanya mengenal itu; field ini cuma label keluarga,
+    # bukan penentu parsing.
+    "CUSTOM_GLORY_127": "ASTM",
 }
 
 # Prefix nama driver → keluarga protokol. Dipakai sebagai aturan umum supaya
@@ -140,6 +144,11 @@ def build_mid_payload(result_row, instrument) -> dict:
 
     # comments tidak ada di kontrak EazyApp.
     payload.pop("comments", None)
+
+    # Konteks khusus alat yang disimpan driver di tbl_result (mis. jam internal
+    # Glory 127 dan field yang belum diketahui artinya). Berguna untuk audit di
+    # MidLab, tapi kunci top-level di luar kontrak berisiko ditolak 422.
+    payload.pop("instrument_meta", None)
 
     return payload
 

@@ -399,7 +399,31 @@ class ResultReceiver:
     # ============================================================
 
     async def _handle_generic_data(self, writer: asyncio.StreamWriter) -> bool:
-        """Handle data untuk protocol selain ASTM/HL7 — parse langsung."""
+        """
+        Handle data untuk protocol selain ASTM/HL7.
+
+        Protocol module boleh mengumumkan batas framenya lewat FRAME_START /
+        FRAME_END (mis. CUSTOM_GLORY_127 dengan `<<<`…`>>>`). Kalau ada,
+        buffer dipotong per frame dulu — tanpa itu satu recv() yang memuat dua
+        pesan akan diperlakukan sebagai satu, dan pesan yang terbelah akan
+        di-parse separuh. Module tanpa atribut itu tetap berperilaku seperti
+        sebelumnya.
+        """
+        start = getattr(self._protocol, "FRAME_START", None)
+        end = getattr(self._protocol, "FRAME_END", None)
+
+        if start and end:
+            while True:
+                frame = self._extract_delimited_frame(start, end)
+                if frame is None:
+                    break
+                self._logger.info(
+                    f"[{self._inst_name}] Frame utuh {len(frame)} byte: "
+                    f"{self._preview(frame)}"
+                )
+                await self._parse_and_save(frame)
+            return False
+
         data = bytes(self._buffer)
         self._buffer.clear()
 
@@ -407,6 +431,59 @@ class ResultReceiver:
             await self._parse_and_save(data)
 
         return False
+
+    def _extract_delimited_frame(self, start: bytes, end: bytes) -> bytes | None:
+        """
+        Ekstrak satu frame `start`…`end` dari buffer.
+
+        Frame dikembalikan BERIKUT delimiternya supaya raw_data yang tersimpan
+        byte-identik dengan yang lewat kabel. None berarti belum ada frame utuh
+        — sisa parsial ditinggal di buffer untuk digabung dengan recv()
+        berikutnya.
+        """
+        try:
+            begin = self._buffer.index(start)
+        except ValueError:
+            # Delimiter pembuka bisa lebih dari satu byte dan ikut terbelah
+            # antar paket, jadi sisakan ekornya sepanjang start-1 byte —
+            # membuang seluruh buffer di sini akan menelan potongan pembuka.
+            keep = len(start) - 1
+            junk = bytes(self._buffer[:-keep]) if keep else bytes(self._buffer)
+            if junk:
+                self._logger.warning(
+                    f"[{self._inst_name}] {len(junk)} byte dibuang, tidak ada "
+                    f"{start!r}: {self._preview(junk)}"
+                )
+                del self._buffer[:len(junk)]
+            return None
+
+        if begin > 0:
+            # Byte nyasar sebelum pembuka = pesan sebelumnya terpotong di kabel.
+            junk = bytes(self._buffer[:begin])
+            self._logger.warning(
+                f"[{self._inst_name}] {len(junk)} byte dibuang sebelum {start!r} "
+                f"(pesan sebelumnya terpotong?): {self._preview(junk)}"
+            )
+            del self._buffer[:begin]
+
+        try:
+            stop = self._buffer.index(end, len(start))
+        except ValueError:
+            self._logger.info(
+                f"[{self._inst_name}] Frame belum lengkap: {len(self._buffer)} "
+                f"byte di buffer, menunggu {end!r}"
+            )
+            return None
+
+        frame_end = stop + len(end)
+        frame = bytes(self._buffer[:frame_end])
+        del self._buffer[:frame_end]
+        return frame
+
+    def _preview(self, data: bytes) -> str:
+        """Potongan isi untuk log — dibatasi supaya stream sampah tidak membanjiri."""
+        limit = getattr(self._protocol, "LOG_PREVIEW_LIMIT", 500)
+        return repr(data[:limit])
 
     # ============================================================
     # Parse & Save
