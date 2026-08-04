@@ -21,9 +21,13 @@ not-found seperti sebelumnya.
 """
 
 import asyncio
+from datetime import timedelta
 from enum import Enum
 
+from sqlalchemy import or_
+
 from lib.db import DBManager, TblOrder, update_order_status
+from lib.timeutil import now_naive
 from lib.utils import get_logger
 from lib.comm_logger import CommLogger
 from protocols.base import is_mllp_protocol
@@ -40,6 +44,75 @@ ASTM_ENQ = 0x05
 # ratusan DSR sekaligus menahan receive loop terlalu lama. Sisanya ikut di
 # group query berikutnya karena statusnya masih pending.
 GROUP_QUERY_MAX_ORDERS = 100
+
+# Berapa lama order yang sudah dikirim masih boleh dikirim ulang kalau alat
+# menanyakan sample ID yang sama.
+#
+# Alat bertanya lagi setiap kali operator mengulang run — terekam 4 Agu 2026,
+# sampel 9097415 ditanyakan 11 kali dalam 20 menit setelah run pertamanya
+# ditolak alat. Dulu semua pertanyaan susulan dijawab not-found karena order
+# sudah `sent`, dan operator terpaksa mengetik ulang demografi pasien.
+#
+# Jendelanya ada supaya sample ID yang didaur ulang LIS tidak dijawab dengan
+# order pasien lain dari minggu lalu. Satu hari kerja menutupi seluruh worklist
+# hari itu; ID yang berulang dalam rentang itu berarti masalah di sisi LIS.
+REDELIVERY_WINDOW_HOURS = 24
+
+
+def _sample_id_of(order) -> str:
+    return ((order.order_json or {}).get("specimen") or {}).get("sample_id")
+
+
+def _patient_id_of(order) -> str:
+    return ((order.order_json or {}).get("patient") or {}).get("patient_id")
+
+
+def _select_order(orders: list, sample_id: str, patient_id: str, cutoff):
+    """
+    Pilih satu order untuk dijawab ke alat; None bila tidak ada yang cocok.
+
+    Urutan prioritas:
+
+    1. Order **pending** dengan sample_id sama
+    2. Order **pending** milik patient_id sama (fallback alat yang menanyakan
+       pasien, bukan barcode)
+    3. Order yang **sudah pernah dikirim** (`sent`/`failed`) dengan sample_id
+       sama dan dibuat setelah `cutoff` — dikirim ulang
+
+    Order pending selalu menang: kalau LIS memakai lagi sample ID yang sama
+    untuk pemeriksaan baru, order barunyalah yang benar.
+
+    Jalur pengiriman ulang sengaja **tidak** punya fallback patient_id. Order
+    pending belum pernah sampai ke alat, jadi menebak lewat pasien masih lebih
+    baik daripada tidak menjawab; order yang sudah terkirim tidak begitu —
+    menjawab pertanyaan sampel B dengan worklist sampel A yang kebetulan satu
+    pasien membuat hasil masuk ke sampel yang salah.
+    """
+    pending = [o for o in orders if o.instrument_status == "pending"]
+
+    if sample_id:
+        for order in pending:
+            if _sample_id_of(order) == sample_id:
+                return order
+
+    if patient_id:
+        for order in pending:
+            if _patient_id_of(order) == patient_id:
+                return order
+
+    if not sample_id:
+        return None
+
+    delivered = [
+        o for o in orders
+        if o.instrument_status in ("sent", "failed")
+        and _sample_id_of(o) == sample_id
+        and o.created_at is not None
+        and o.created_at >= cutoff
+    ]
+    if not delivered:
+        return None
+    return max(delivered, key=lambda o: (o.created_at, o.id))
 
 
 class QueryState(Enum):
@@ -154,8 +227,10 @@ class QueryHandler:
                 # Order ditemukan → kirim response
                 order_id = order.id
                 order_json = order.order_json or {}
+                redelivery = order.instrument_status == "sent"
                 self._logger.info(
-                    f"[{self._inst_name}] Order #{order_id} ditemukan "
+                    f"[{self._inst_name}] Order #{order_id} "
+                    f"{'dikirim ulang' if redelivery else 'ditemukan'} "
                     f"untuk sample_id={sample_id}"
                 )
 
@@ -165,9 +240,15 @@ class QueryHandler:
                     order_json, instrument_dict, query_msh
                 )
 
-                # UPDATE — Update status order
-                self._set_state(QueryState.UPDATE)
-                await self._update_order_result(order_id, success)
+                # UPDATE — Update status order.
+                #
+                # Order yang sudah `sent` tidak disentuh: pengiriman pertamanya
+                # tetap sah, jadi menurunkannya jadi `failed` hanya karena
+                # pengiriman ulang tidak di-ACK akan memunculkan alarm palsu di
+                # Order Monitor.
+                if not redelivery:
+                    self._set_state(QueryState.UPDATE)
+                    await self._update_order_result(order_id, success)
 
                 if success:
                     self._total_found += 1
@@ -346,47 +427,39 @@ class QueryHandler:
         """
         Cari order di tbl_order berdasarkan sample_id atau patient_id.
 
-        Urutan pencarian:
-        1. Cari berdasarkan sample_id di order_json.specimen.sample_id
-        2. Fallback: cari berdasarkan patient_id di order_json.patient.patient_id
+        Kandidatnya order pending (tanpa batas umur) plus order yang sudah
+        pernah dikirim dalam REDELIVERY_WINDOW_HOURS terakhir — yang terakhir
+        untuk melayani alat yang menanyakan sampel yang sama lagi. Kebijakan
+        pemilihannya ada di `_select_order()`.
 
         Returns:
             TblOrder object atau None
         """
+        cutoff = now_naive() - timedelta(hours=REDELIVERY_WINDOW_HOURS)
+
         def _db_lookup():
             db = DBManager()
             session = db.get_session()
             try:
-                # Cari order pending untuk instrument ini
                 orders = (
                     session.query(TblOrder)
                     .filter(
                         TblOrder.instrument_id == self._config.id,
-                        TblOrder.instrument_status == "pending",
+                        or_(
+                            TblOrder.instrument_status == "pending",
+                            TblOrder.created_at >= cutoff,
+                        ),
                     )
                     .order_by(TblOrder.created_at.asc())
                     .all()
                 )
 
-                # Cari berdasarkan sample_id
-                if sample_id:
-                    for order in orders:
-                        oj = order.order_json or {}
-                        specimen = oj.get("specimen", {})
-                        if specimen.get("sample_id") == sample_id:
-                            session.expunge(order)
-                            return order
-
-                # Fallback: cari berdasarkan patient_id
-                if patient_id:
-                    for order in orders:
-                        oj = order.order_json or {}
-                        patient = oj.get("patient", {})
-                        if patient.get("patient_id") == patient_id:
-                            session.expunge(order)
-                            return order
-
-                return None
+                # Batas waktu yang sama ditegakkan lagi di `_select_order()`:
+                # order tanpa created_at lolos filter SQL di atas.
+                order = _select_order(orders, sample_id, patient_id, cutoff)
+                if order is not None:
+                    session.expunge(order)
+                return order
 
             except Exception as e:
                 self._logger.error(
@@ -407,9 +480,13 @@ class QueryHandler:
         "sampel terbaru") sengaja tidak dipakai sebagai filter: flag `pending`
         sudah berarti "belum pernah dikirim ke alat", dan order otomatis jadi
         `sent` setelah terkirim — jadi group query berikutnya hanya dapat yang
-        baru, persis seperti maksud mode "sampel terbaru". Membandingkan jam
-        alat (waktu lokal) dengan created_at (UTC) justru berisiko membuang
-        order secara diam-diam.
+        baru, persis seperti maksud mode "sampel terbaru". Jam alat sendiri
+        tertinggal beberapa detik dari jam server, jadi memakainya sebagai
+        batas justru berisiko membuang order secara diam-diam.
+
+        Group download tetap pending-only: order yang sudah terkirim hanya
+        dikirim ulang kalau alat menanyakan sample ID-nya secara spesifik
+        (lihat `_select_order`), bukan diborong ulang tiap batch download.
         """
         def _db_lookup():
             db = DBManager()
