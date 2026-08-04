@@ -494,6 +494,15 @@ def test_obx_umur_setahun_lebih_tetap_dalam_tahun(mod):
     assert age[6] == "yr"
 
 
+def test_worklist_tidak_menunggu_ack(mod):
+    """
+    Alat tidak pernah mengirim MSA — di seluruh log komunikasi ia hanya
+    mengirim ORM^O01 dan ORU^R01. QueryHandler membaca flag ini; tanpa itu
+    setiap worklist yang sampai dengan selamat ditandai `failed`.
+    """
+    assert mod.ACK_EXPECTED_ON_QUERY_RESPONSE is False
+
+
 def test_test_mode_tidak_dikirim_bila_order_tidak_menyebutnya(mod):
     """Menebak mode pemeriksaan lebih berbahaya daripada membiarkan default alat."""
     order = dict(ORDER, tests=[{"test_code": "XYZ", "test_name": "Panel Lain"}])

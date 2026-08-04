@@ -534,7 +534,8 @@ class QueryHandler:
         ASTM: format_query_response → kirim frames dengan ENQ/ACK/EOT
         HL7:  format_query_response_full → kirim MLLP message
 
-        Returns: True jika ACK diterima
+        Returns: True jika ACK diterima — atau, untuk alat yang memang tidak
+        mengacknowledge worklist, True bila pesannya berhasil ditulis.
         """
         protocol = self._config.protocol.upper()
 
@@ -548,8 +549,18 @@ class QueryHandler:
                     order_json, instrument_dict
                 )
 
+            # Balasan worklist adalah jawaban atas pertanyaan alat; sebagian
+            # alat menganggap percakapan selesai di situ dan tidak mengirim
+            # apa-apa lagi (lihat ACK_EXPECTED_ON_NOT_FOUND untuk jalur
+            # not-found). Menunggu ACK yang tak akan datang bikin order
+            # ditandai `failed` padahal worklist-nya sampai dengan selamat,
+            # dan read()-nya bisa ikut menelan pesan alat berikutnya.
+            expect_ack = getattr(
+                self._protocol, "ACK_EXPECTED_ON_QUERY_RESPONSE", True
+            )
+
             async with self._lock:
-                return await self._send_data(formatted)
+                return await self._send_data(formatted, expect_ack=expect_ack)
 
         except Exception as e:
             self._logger.error(

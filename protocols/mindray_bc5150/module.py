@@ -53,6 +53,13 @@ class MindrayBC5150Module(BaseProtocolModule):
     # lanjut mengirim hasil), jadi QueryHandler tidak boleh menunggu.
     ACK_EXPECTED_ON_NOT_FOUND = False
 
+    # Worklist pun tidak diacknowledge. Alat hanya pernah mengirim dua jenis
+    # pesan — ORM^O01 dan ORU^R01; tidak ada satu pun MSA dari alat di seluruh
+    # log komunikasi (tcp_1.comm.log, 8 MB, 27 Jul–4 Agu 2026). Selama flag ini
+    # belum ada, setiap worklist yang sampai dengan selamat ditandai `failed`
+    # ("ACK timeout") — 19 dari 19 order yang terkirim di alat produksi.
+    ACK_EXPECTED_ON_QUERY_RESPONSE = False
+
     # build_ack_response() sudah tahu cara membalas ORM^O01 (dengan
     # ORR^O02/MSA|AR). Dengan flag ini ResultReceiver membalas sendiri saat
     # instrumen dijalankan unidirectional — tanpa QueryHandler, ORM tetap
