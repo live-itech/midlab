@@ -1,15 +1,18 @@
 """
 Test driver CUSTOM_GLORY_127 (Glory 127 chemistry analyzer).
 
-Kedua pesan contoh disalin **verbatim dari hasil tapping lapangan**
-(Hercules, serial COM5 115200 8N1, 2026-08-04). Setiap record berpasangan
-dengan foto layar Result List alat untuk record yang sama, sehingga pemetaan
-field terkonfirmasi ke label alat — bukan tebakan:
+Ketiga pesan contoh disalin **verbatim dari hasil tapping lapangan**. Dua yang
+pertama (Hercules, serial COM5 115200 8N1, 2026-08-04) berpasangan dengan foto
+layar Result List alat untuk record yang sama, sehingga pemetaan field
+terkonfirmasi ke label alat — bukan tebakan:
 
   SGPT      → Program Name SGPT, Nr 510, RATE -0.0069, CONC 11.0388 U/L,
               Normal 0.0000–40.0000, tanpa flag
   LDL CHOL  → Program Name LDL CHOL, Nr 506, OD 0.7136, CONC 189.0841 mg/dL,
               Normal 0.0000–130.0000, flag H
+  TRIG      → capture TCP 2026-08-05 (tcp_3.comm.log), satu-satunya record
+              dengan `Ref` terisi — inilah yang mengoreksi sample_id dari
+              `Nr` ke `Ref`
 
 Perhatikan layar menampilkan 4 desimal sedangkan kabel 3 desimal; yang
 dikirim ke LIS adalah angka kabel.
@@ -44,6 +47,14 @@ LDL = (
     b"0.0000,130.0000,0.0000,400.0000,00,00,GLORY 127,>>>"
 )
 
+# Record dengan `Ref` TERISI — capture lapangan 2026-08-05 (tcp_3.comm.log).
+# Bukti bahwa nomor sampel lab ada di `Ref`, bukan `Nr`: pada sesi yang sama
+# `Nr` berjalan 511 → 512 → 513 lintas sampel yang berbeda, murni counter alat.
+TRIG = (
+    b"<<<TRIG,513,6787517,2000-01-01 00:11:28,-0.000,0.000,0.002,mg/dL ,"
+    b"150.0000,500.0000,0.7400,800.0000,00,00,GLORY 127,>>>"
+)
+
 INSTRUMENT = {"id": 7, "name": "Glory 127", "protocol": PROTOCOL}
 
 # Jam server palsu — alat masih di 2000-01-01, jadi keduanya harus terpisah jelas
@@ -69,10 +80,28 @@ def test_sgpt_menghasilkan_satu_hasil_klinis(mod):
     assert r["unit"] == "U/L"
 
 
-def test_sample_id_diambil_dari_nr(mod):
-    """Dikonfirmasi user: lab memakai Nr, bukan Ref (Ref kosong di lapangan)."""
-    assert mod.parse(SGPT, INSTRUMENT)["specimen"]["sample_id"] == "510"
-    assert mod.parse(LDL, INSTRUMENT)["specimen"]["sample_id"] == "506"
+def test_sample_id_diambil_dari_ref(mod):
+    """
+    Capture lapangan 2026-08-05: `<<<TRIG,513,6787517,...>>>`. Operator mengetik
+    6787517 sebagai nomor sampel di kolom `Ref`; `Nr` 513 cuma counter internal.
+    """
+    out = mod.parse(TRIG, INSTRUMENT)
+    assert out["specimen"]["sample_id"] == "6787517"
+    assert out["instrument_meta"]["nr"] == "513"
+
+
+def test_ref_kosong_menyisakan_sample_id_kosong(mod):
+    """
+    `Nr` sengaja TIDAK dipakai sebagai cadangan: counter internal alat bisa
+    bertabrakan dengan nomor sampel sungguhan di LIS dan menempelkan hasil ke
+    sampel yang salah. Baris tetap disimpan supaya hasilnya tidak hilang —
+    kegagalan push nanti terlihat di Result Monitor, bukan senyap.
+    """
+    out = mod.parse(SGPT, INSTRUMENT)
+
+    assert out["specimen"]["sample_id"] == ""
+    assert any("Ref" in e for e in out["parse_errors"])
+    assert mod.should_store_result(out, SGPT) is True
 
 
 def test_nama_tes_bespasi_utuh(mod):
@@ -197,7 +226,8 @@ def test_meta_menyimpan_konteks_alat(mod):
 # ============================================================
 
 def test_parse_bersih_tidak_meninggalkan_error(mod):
-    assert mod.parse(SGPT, INSTRUMENT)["parse_errors"] == []
+    """TRIG dipakai di sini karena satu-satunya record lapangan yang Ref-nya terisi."""
+    assert mod.parse(TRIG, INSTRUMENT)["parse_errors"] == []
 
 
 def test_jumlah_field_kurang_tetap_disimpan_dengan_catatan(mod):

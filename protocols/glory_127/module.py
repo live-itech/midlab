@@ -6,13 +6,14 @@ mem-parse dan menyimpan. Tidak ada jalur order maupun query — semua method
 kontrak ke arah alat di-stub sebagai tidak didukung.
 
 Satu pesan `<<<...>>>` = SATU analit. Sepuluh tes dari satu sampel datang
-sebagai sepuluh pesan terpisah yang berbagi `Nr` yang sama, jadi sepuluh baris
+sebagai sepuluh pesan terpisah yang berbagi `Ref` yang sama (`Nr` justru
+berbeda di tiap pesan — itu counter internal alat), jadi sepuluh baris
 tbl_result dengan sample_id identik. Penggabungan (kalau nanti diperlukan)
 adalah urusan LIS, bukan driver.
 
 Sumber format: tapping lapangan 2026-08-04 (Hercules, serial 115200 8N1),
-dua record berpasangan dengan foto layar Result List alat. Tidak ada dokumen
-interface vendor — lihat §8 "Asumsi terbuka" di
+dua record berpasangan dengan foto layar Result List alat. Pemetaan sample_id
+dikoreksi dari capture 2026-08-05 — lihat §8 "Asumsi terbuka" di
 docs/superpowers/specs/2026-08-04-glory-127-design.md
 """
 
@@ -92,7 +93,13 @@ class Glory127Module(BaseProtocolModule):
                 f"jumlah field {len(fields)}, diharapkan {EXPECTED_FIELD_COUNT}"
             )
 
-        result.specimen.sample_id = field(fields, FIELD_NR)
+        # Nomor sampel ada di `Ref`, kolom yang diketik operator. `Nr` sengaja
+        # TIDAK dipakai sebagai cadangan: itu counter internal alat yang terus
+        # naik lintas sampel, jadi memakainya bisa menempelkan hasil ke sampel
+        # lain yang kebetulan bernomor sama di LIS.
+        result.specimen.sample_id = field(fields, FIELD_REF)
+        if not result.specimen.sample_id:
+            result.parse_errors.append("Ref kosong: nomor sampel tidak diketahui")
 
         test_code = field(fields, FIELD_PROGRAM_NAME)
         value = field(fields, FIELD_CONC)

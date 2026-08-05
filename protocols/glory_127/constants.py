@@ -28,8 +28,10 @@ FIELD_SEPARATOR = ","
 # Yang UNKNOWN tidak muncul di layar mana pun dan tidak ada dokumen vendor.
 # Sengaja TIDAK ditebak semantiknya — disimpan mentah di instrument_meta.
 FIELD_PROGRAM_NAME = 0   # layar: "Program Name"
-FIELD_NR = 1             # layar: "Nr"        → sample_id
-FIELD_REF = 2            # layar: "Ref"       → kosong di lapangan
+FIELD_NR = 1             # layar: "Nr"        → counter internal alat, naik
+                         # lintas sampel (511→512→513 dalam satu sesi).
+                         # BUKAN nomor sampel.
+FIELD_REF = 2            # layar: "Ref"       → sample_id, diketik operator
 FIELD_DATETIME = 3       # layar: "Time"      → jam alat (bisa tertinggal)
 FIELD_RATE_OD = 4        # layar: "RATE" (kinetik) / "OD" (endpoint)
 FIELD_UNKNOWN_5 = 5
