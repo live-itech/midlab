@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}MidLab{% endblock %} - Web Console</title>
   <link rel="icon" type="image/svg+xml" href="/static/img/midlab_icon.svg">
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="{{ asset_url('css/style.css') if asset_url is defined else '/static/css/style.css?v=f2177af' }}">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -101,7 +101,7 @@
 
   <div id="toast-container" class="toast-container"></div>
 
-  <script src="/static/js/app.js"></script>
+  <script src="{{ asset_url('js/app.js') if asset_url is defined else '/static/js/app.js?v=f2177af' }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

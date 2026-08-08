@@ -86,6 +86,28 @@ if os.path.isdir(_STATIC_DIR):
 _templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
 
+def _asset_url(path: str) -> str:
+    """URL statik + cache-buster otomatis dari mtime file.
+
+    Browser (dan proxy di tengah) ambil versi baru tiap file berubah, tanpa perlu
+    hard-refresh atau bump manual. Tanpa ini, app.js/style.css lama ke-cache dan
+    mismatch dengan HTML baru (mis. "App.validasiHost is not a function").
+
+    Template pakai pola `asset_url(...) if asset_url is defined else '...?v=<hash>'`
+    supaya proses lama (yang belum reload helper ini) tetap render — fallback ke
+    versi hardcoded — jadi tidak ada downtime saat deploy.
+    """
+    rel = path.lstrip("/")
+    try:
+        v = int(os.path.getmtime(os.path.join(_STATIC_DIR, rel)))
+    except OSError:
+        v = 0
+    return f"/static/{rel}?v={v}"
+
+
+_templates.env.globals["asset_url"] = _asset_url
+
+
 # ============================================================
 # Page Routes (HTML)
 # ============================================================
