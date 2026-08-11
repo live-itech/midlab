@@ -239,11 +239,23 @@ sudo /opt/midlab/.venv/bin/pip install -r /opt/midlab/requirements.txt
 # 3. Migrasi DB baru? Semua idempotent, aman dijalankan tiap kali update:
 sudo -u midlab /opt/midlab/.venv/bin/python /opt/midlab/scripts/migrate_lis_api.py
 sudo -u midlab /opt/midlab/.venv/bin/python /opt/midlab/scripts/migrate_tap_session.py
+sudo -u midlab /opt/midlab/.venv/bin/python /opt/midlab/scripts/migrate_result_fingerprint.py
 
 # 4. Baru sync + restart
 sudo bash scripts/deploy.sh                 # restart web console saja (aman jam kerja)
 # sudo bash scripts/deploy.sh --restart-all # restart semua unit midlab-* yang aktif
 ```
+
+> **Urutan langkah 3 sebelum langkah 4 wajib** untuk
+> `migrate_result_fingerprint.py`. Skrip itu menambah kolom
+> `tbl_result.result_fingerprint` yang dipakai rekap jumlah pemeriksaan di
+> Result Monitor. Model ORM baru menyebut kolom itu di setiap INSERT **dan**
+> SELECT ke `tbl_result`, jadi kalau kode sudah aktif sementara kolomnya belum
+> ada, hasil dari alat gagal tersimpan sekaligus Result Monitor gagal memuat
+> data. Skripnya idempotent dan aman dijalankan saat service hidup: kolomnya
+> nullable dan service versi lama tidak menyentuhnya. Backfill dicicil 500 baris
+> per transaksi; baris yang belum ter-backfill tetap ikut terhitung, hanya saja
+> selalu dianggap pemeriksaan tersendiri.
 
 Opsi `deploy.sh`: `--dry-run` (preview), `--no-restart`, `--restart-all`.
 
