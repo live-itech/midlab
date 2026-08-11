@@ -45,6 +45,7 @@ from lib.db import (
     get_latest_status_per_instrument,
     get_setting,
     set_setting,
+    summarize_results,
     update_result_status,
     update_order_status,
 )
@@ -312,6 +313,14 @@ class ResultResponse(BaseModel):
     received_at: Optional[str] = None
     sent_at: Optional[str] = None
     result_json: Optional[dict] = None
+
+
+class ResultSummaryRow(BaseModel):
+    instrument_id: int
+    instrument_name: str
+    total: int
+    unique_count: int
+    duplicate_count: int
 
 
 class OrderResponse(BaseModel):
@@ -1267,6 +1276,66 @@ async def list_results(
             )
             for r in rows
         ]
+    finally:
+        session.close()
+
+
+@app.get("/api/results/summary", response_model=list[ResultSummaryRow])
+async def results_summary(
+    status: str = Query(default=None, description="Filter: pending, sent, failed"),
+    instrument_id: int = Query(default=None),
+    date_from: str = Query(default=None, description="ISO8601 date"),
+    date_to: str = Query(default=None, description="ISO8601 date"),
+    x_api_key: str = Header(None),
+):
+    """
+    Rekap jumlah pemeriksaan per alat pada rentang filter yang sama dengan
+    /api/results.
+
+    Sengaja tanpa limit/offset: ringkasan menghitung seluruh baris dalam
+    rentang, bukan halaman yang sedang dibuka.
+
+    Rute ini didaftarkan sebelum /api/results/{result_id}/... — FastAPI
+    mencocokkan rute sesuai urutan pendaftaran, jadi kalau terbalik "summary"
+    akan tertangkap sebagai result_id dan gagal validasi integer.
+    """
+    _verify_api_key(x_api_key)
+
+    db = DBManager()
+    session = db.get_session()
+    try:
+        rows = summarize_results(
+            session,
+            status=status,
+            instrument_id=instrument_id,
+            received_from=(
+                _parse_filter_date(date_from, "date_from") if date_from else None
+            ),
+            received_to=(
+                _parse_filter_date(date_to, "date_to", end_of_day=True)
+                if date_to
+                else None
+            ),
+        )
+
+        names = {
+            inst.id: inst.name for inst in session.query(TblInstrument).all()
+        }
+
+        out = [
+            ResultSummaryRow(
+                instrument_id=r["instrument_id"],
+                instrument_name=names.get(
+                    r["instrument_id"], f"#{r['instrument_id']}"
+                ),
+                total=r["total"],
+                unique_count=r["unique_count"],
+                duplicate_count=r["total"] - r["unique_count"],
+            )
+            for r in rows
+        ]
+        out.sort(key=lambda row: row.instrument_name.lower())
+        return out
     finally:
         session.close()
 

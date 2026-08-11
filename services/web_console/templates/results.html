@@ -8,20 +8,44 @@
   <p>Monitor hasil pengukuran dari alat lab</p>
 </div>
 
+<div class="card" style="margin-bottom:16px">
+  <div class="card-header">
+    <h2>Ringkasan Pemeriksaan</h2>
+    <span class="text-muted text-sm">Kiriman dengan isi identik dihitung sekali</span>
+  </div>
+  <div class="card-body no-padding">
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th>Alat</th>
+            <th class="text-right">Total</th>
+            <th class="text-right">Unik</th>
+            <th class="text-right">Kiriman ulang</th>
+          </tr>
+        </thead>
+        <tbody id="summary-tbody">
+          <tr><td colspan="4" class="text-center text-muted" style="padding:16px">Memuat...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <div class="card">
   <div class="card-header">
     <div class="filter-bar" style="margin-bottom:0">
-      <select class="form-select" id="filter-status" onchange="loadResults()">
+      <select class="form-select" id="filter-status" onchange="applyFilters()">
         <option value="">Semua Status</option>
         <option value="pending">Pending</option>
         <option value="sent">Sent</option>
         <option value="failed">Failed</option>
       </select>
-      <select class="form-select" id="filter-instrument" onchange="loadResults()">
+      <select class="form-select" id="filter-instrument" onchange="applyFilters()">
         <option value="">Semua Instrument</option>
       </select>
-      <input type="date" class="form-input" id="filter-from" onchange="loadResults()" style="max-width:160px">
-      <input type="date" class="form-input" id="filter-to" onchange="loadResults()" style="max-width:160px">
+      <input type="date" class="form-input" id="filter-from" onchange="applyFilters()" style="max-width:160px">
+      <input type="date" class="form-input" id="filter-to" onchange="applyFilters()" style="max-width:160px">
     </div>
   </div>
   <div class="card-body no-padding">
@@ -101,6 +125,71 @@
     }
   };
 
+  function summaryFilters() {
+    const params = {};
+    const status = document.getElementById('filter-status').value;
+    const instId = document.getElementById('filter-instrument').value;
+    const from = document.getElementById('filter-from').value;
+    const to = document.getElementById('filter-to').value;
+    if (status) params.status = status;
+    if (instId) params.instrument_id = instId;
+    if (from) params.date_from = from;
+    if (to) params.date_to = to;
+    return params;
+  }
+
+  function summaryMessage(text) {
+    document.getElementById('summary-tbody').innerHTML =
+      `<tr><td colspan="4" class="text-center text-muted" style="padding:16px">${text}</td></tr>`;
+  }
+
+  window.loadSummary = async function() {
+    try {
+      const rows = await App.api('/api/results/summary' + App.buildQuery(summaryFilters()));
+      renderSummary(rows);
+    } catch (err) {
+      // Kegagalan panel tidak boleh ikut mematikan tabel hasil di bawahnya.
+      console.error(err);
+      summaryMessage('Ringkasan tidak tersedia');
+    }
+  };
+
+  function renderSummary(rows) {
+    if (!rows || rows.length === 0) {
+      summaryMessage('Tidak ada data pada rentang ini');
+      return;
+    }
+
+    const sum = (key) => rows.reduce((acc, r) => acc + r[key], 0);
+    const dupCell = (n) => n > 0
+      ? `<span class="badge badge-yellow">${n}</span>`
+      : '0';
+
+    const body = rows.map(r => `<tr>
+      <td>${App.escapeHtml(r.instrument_name)}</td>
+      <td class="text-right">${r.total}</td>
+      <td class="text-right">${r.unique_count}</td>
+      <td class="text-right">${dupCell(r.duplicate_count)}</td>
+    </tr>`).join('');
+
+    // TOTAL dijumlah per alat, bukan hitung-ulang lintas alat: sidik jari yang
+    // sama dari dua alat berbeda tetap dua pemeriksaan yang berbeda.
+    const footer = `<tr style="font-weight:600">
+      <td>TOTAL</td>
+      <td class="text-right">${sum('total')}</td>
+      <td class="text-right">${sum('unique_count')}</td>
+      <td class="text-right">${sum('duplicate_count')}</td>
+    </tr>`;
+
+    document.getElementById('summary-tbody').innerHTML = body + footer;
+  }
+
+  window.applyFilters = function() {
+    currentPage = 0;   // filter berubah → kembali ke halaman pertama
+    loadResults();
+    loadSummary();
+  };
+
   function getSampleId(r) {
     try {
       if (r.result_json && r.result_json.specimen) return r.result_json.specimen.sample_id || '-';
@@ -163,6 +252,7 @@
 
   loadInstruments();
   loadResults();
+  loadSummary();
 })();
 </script>
 {% endblock %}
