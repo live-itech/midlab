@@ -168,17 +168,24 @@ ringkasan selalu menghitung **seluruh** baris dalam rentang, bukan halaman aktif
 ```sql
 SELECT instrument_id,
        COUNT(*) AS total,
-       COUNT(DISTINCT COALESCE(result_fingerprint, CONCAT('row:', id))) AS unik
+       COUNT(DISTINCT COALESCE(result_fingerprint, CAST(id AS CHAR))) AS unik
 FROM tbl_result
 WHERE <filter yang sama dengan /api/results>
 GROUP BY instrument_id
 ```
 
-`COALESCE(..., CONCAT('row:', id))` menangani baris yang sidik jarinya masih
+`COALESCE(..., CAST(id AS CHAR))` menangani baris yang sidik jarinya masih
 `NULL`: tanpa itu `COUNT(DISTINCT)` akan mengabaikan NULL dan hitungan unik
 menjadi terlalu kecil. Dengan ini, baris yang belum ter-fingerprint dihitung
 sebagai pemeriksaan tersendiri — pilihan yang aman (tidak pernah menggabungkan
-data yang belum tentu sama) sekaligus membuat urutan deploy tidak kritis.
+data yang belum tentu sama) sekaligus membuat urutan deploy tidak kritis. `id`
+yang dicor jadi teks tidak mungkin bertabrakan dengan sidik jari asli, yang
+selalu 64 karakter heksadesimal.
+
+Query-nya ditulis sebagai fungsi `lib/db.py: summarize_results(session, ...)`
+yang menerima session dari pemanggil, bukan membuat sendiri. Dengan begitu
+agregasinya bisa diuji langsung di atas fixture SQLite in-memory yang sudah ada
+(`tests/conftest.py: db_session`), tanpa mock dan tanpa MySQL.
 
 Nama alat diambil lewat satu query kecil terpisah ke `tbl_instrument` lalu
 digabung di Python. Lebih sederhana daripada `JOIN` yang harus ikut masuk
@@ -251,6 +258,14 @@ terlihat; nol ditulis polos tanpa badge.
 - `sample_id` berbeda → sidik jari berbeda
 - spasi berlebih di sekitar nilai → sidik jari sama
 - `None` dan `{}` → mengembalikan hex 64 karakter, tidak melempar exception
+
+**`tests/test_db_result_summary.py`** — agregasi nyata di atas fixture SQLite
+`db_session`, tanpa mock:
+
+- tiga baris dengan sidik jari sama → `total=3, unique_count=1`
+- baris ber-sidik jari `NULL` tidak pernah menyatu satu sama lain
+- dua alat berbeda → dua baris hasil, hitungannya tidak saling bocor
+- filter rentang tanggal memotong baris di luar rentang
 
 **`tests/test_api_results_summary.py`** — `TestClient` + `DBManager` di-mock,
 mengikuti pola `tests/test_api_lis_events.py`:
