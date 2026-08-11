@@ -34,6 +34,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.pool import QueuePool
 
 from lib.config import Config
+from lib.fingerprint import result_fingerprint
 from lib.timeutil import now_naive
 
 
@@ -100,6 +101,14 @@ class TblResult(Base):
     sent_at = Column(DateTime, nullable=True)
     error_message = Column(Text, nullable=True)
     received_at = Column(DateTime, default=now_naive)
+    # Sidik jari isi klinis, untuk membedakan kiriman ulang alat dari
+    # pemeriksaan baru. NULL = belum dihitung (baris lama sebelum backfill);
+    # query rekap memperlakukannya sebagai baris unik.
+    result_fingerprint = Column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("idx_result_instrument_received", "instrument_id", "received_at"),
+    )
 
 
 class TblOrder(Base):
@@ -416,6 +425,19 @@ def update_order_status(
         session.close()
 
 
+def _safe_fingerprint(result_json: dict) -> str | None:
+    """
+    Sidik jari yang tidak pernah menggagalkan penyimpanan.
+
+    Hasil dari alat lab jauh lebih penting daripada angka rekap. Kalau hashing
+    bermasalah, kolomnya dibiarkan NULL dan baris tetap tersimpan.
+    """
+    try:
+        return result_fingerprint(result_json)
+    except Exception:
+        return None
+
+
 def save_result(
     instrument_id: int,
     protocol: str,
@@ -436,6 +458,7 @@ def save_result(
             raw_data=raw_data,
             result_json=result_json,
             send_status="pending",
+            result_fingerprint=_safe_fingerprint(result_json),
         )
         session.add(new_result)
         session.commit()
