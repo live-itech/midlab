@@ -20,7 +20,13 @@ def test_create_instrument_with_lis_fields_round_trips():
         if "row" in captured:
             captured["row"].id = 99
 
-    with patch("services.web_console.api.DBManager") as MockDB:
+    # `watchdog` baru diisi oleh handler startup FastAPI. TestClient tanpa
+    # context manager tidak menjalankan lifespan, jadi tanpa patch ini nilainya
+    # None dan endpoint gagal saat mendaftarkan service (500, bukan 201).
+    # Di-mock, bukan dijalankan beneran: startup asli akan menyalakan service
+    # alat sungguhan di mesin ini.
+    with patch("services.web_console.api.DBManager") as MockDB, \
+            patch("services.web_console.api.watchdog", MagicMock()):
         mock_session = MagicMock()
         mock_session.add.side_effect = fake_add
         mock_session.commit.side_effect = fake_commit
