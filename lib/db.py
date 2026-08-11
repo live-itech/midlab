@@ -28,6 +28,9 @@ from sqlalchemy import (
     DateTime,
     Enum,
     Index,
+    cast,
+    distinct,
+    func,
 )
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
@@ -468,6 +471,57 @@ def save_result(
         return None
     finally:
         session.close()
+
+
+def summarize_results(
+    session,
+    status: str | None = None,
+    instrument_id: int | None = None,
+    received_from=None,
+    received_to=None,
+) -> list[dict]:
+    """
+    Rekap jumlah hasil per alat: total baris dan jumlah pemeriksaan unik.
+
+    Unik dihitung dari sidik jari isi klinis, jadi kiriman ulang dari alat
+    (isi persis sama) menyusut jadi satu. Baris yang sidik jarinya masih NULL
+    diwakili oleh id-nya sendiri sehingga selalu terhitung unik — lebih aman
+    menghitung lebih daripada menggabungkan data yang belum tentu sama. `id`
+    yang dicor jadi teks tidak mungkin bertabrakan dengan sidik jari asli yang
+    selalu 64 karakter heksadesimal.
+
+    Session sengaja diterima dari pemanggil (bukan dibuat sendiri) supaya
+    agregasinya bisa diuji langsung di atas SQLite in-memory.
+    """
+    identity = func.coalesce(
+        TblResult.result_fingerprint, cast(TblResult.id, String)
+    )
+
+    q = session.query(
+        TblResult.instrument_id,
+        func.count(TblResult.id),
+        func.count(distinct(identity)),
+    )
+
+    if status:
+        q = q.filter(TblResult.send_status == status)
+    if instrument_id:
+        q = q.filter(TblResult.instrument_id == instrument_id)
+    if received_from is not None:
+        q = q.filter(TblResult.received_at >= received_from)
+    if received_to is not None:
+        q = q.filter(TblResult.received_at <= received_to)
+
+    rows = (
+        q.group_by(TblResult.instrument_id)
+        .order_by(TblResult.instrument_id)
+        .all()
+    )
+
+    return [
+        {"instrument_id": inst_id, "total": total, "unique_count": uniq}
+        for inst_id, total, uniq in rows
+    ]
 
 
 def get_setting(key: str, default: str | None = None) -> str | None:
