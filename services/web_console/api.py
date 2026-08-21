@@ -1342,7 +1342,14 @@ async def results_summary(
 
 @app.post("/api/results/{result_id}/retry", response_model=MessageResponse)
 async def retry_result(result_id: int, x_api_key: str = Header(None)):
-    """Reset result ke pending agar ResultSenderService kirim ulang."""
+    """
+    Reset result ke pending agar ResultSenderService / LisBridge kirim ulang.
+
+    Berlaku untuk status apa pun, bukan cuma 'failed': result yang sudah
+    'sent' pun bisa dikirim ulang ke LIS (mis. data tidak terlihat di sisi
+    EazyLab). Pengiriman tetap dikerjakan service pengirim yang polling baris
+    pending — endpoint ini hanya memindahkan flag.
+    """
     _verify_api_key(x_api_key)
 
     db = DBManager()
@@ -1352,11 +1359,20 @@ async def retry_result(result_id: int, x_api_key: str = Header(None)):
         if row is None:
             raise HTTPException(404, f"Result ID {result_id} tidak ditemukan")
 
+        previous = row.send_status
         row.send_status = "pending"
-        row.error_message = "manual retry via web console"
+        row.error_message = f"manual retry via web console (sebelumnya: {previous})"
+        # Kirim ulang baris yang sudah sukses = siklus kirim baru, jadi jatah
+        # retry-nya dikembalikan penuh. Baris 'failed' sengaja tidak disentuh
+        # supaya perilaku retry lama persis sama.
+        if previous == "sent":
+            row.retry_count = 0
         session.commit()
 
-        logger.info(f"Result {result_id} di-reset ke pending (manual retry)")
+        logger.info(
+            f"Result {result_id} di-reset ke pending (manual retry, "
+            f"status sebelumnya: {previous})"
+        )
         return MessageResponse(success=True, message=f"Result {result_id} di-set ke pending")
     except HTTPException:
         raise

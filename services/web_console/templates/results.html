@@ -202,6 +202,19 @@
     return `<span class="badge ${map[status] || 'badge-blue'}">${status}</span>`;
   }
 
+  // Kolom aksi: 'failed' tetap tombol Retry seperti sebelumnya, 'sent' dapat
+  // tombol kirim ulang (pakai konfirmasi karena LIS akan menerima data yang
+  // sama dua kali), 'pending' ditampilkan nonaktif karena sudah antre.
+  function actionButton(r) {
+    if (r.send_status === 'failed') {
+      return `<button class="btn btn-primary btn-xs" onclick="retryResult(${r.id})">Retry</button>`;
+    }
+    if (r.send_status === 'sent') {
+      return `<button class="btn btn-ghost btn-xs" onclick="resendResult(${r.id})">Kirim Ulang</button>`;
+    }
+    return `<button class="btn btn-ghost btn-xs" disabled title="Sudah dalam antrean kirim">Kirim Ulang</button>`;
+  }
+
   function renderTable() {
     const tbody = document.getElementById('results-tbody');
     if (resultList.length === 0) {
@@ -219,7 +232,7 @@
         <td>
           <div class="d-flex gap-2">
             <button class="btn btn-ghost btn-xs" onclick="viewResultJson(${r.id})">JSON</button>
-            ${r.send_status === 'failed' ? `<button class="btn btn-primary btn-xs" onclick="retryResult(${r.id})">Retry</button>` : ''}
+            ${actionButton(r)}
           </div>
         </td>
       </tr>`).join('');
@@ -240,14 +253,27 @@
     if (r) App.showJsonModal(`Result #${id}`, r.result_json || r);
   };
 
-  window.retryResult = async function(id) {
+  async function queueForSending(id, successMessage) {
     try {
       await App.api(`/api/results/${id}/retry`, { method: 'POST' });
-      App.toast(`Result ${id} di-retry`, 'success');
+      App.toast(successMessage, 'success');
       loadResults();
     } catch (err) {
       App.toast(err.message, 'error');
     }
+  }
+
+  window.retryResult = async function(id) {
+    await queueForSending(id, `Result ${id} di-retry`);
+  };
+
+  window.resendResult = async function(id) {
+    const ok = await App.confirm(
+      'Kirim ulang ke EazyLab?',
+      `Result ${id} sudah berstatus sent. Mengirim ulang membuat EazyLab menerima data ini lagi.`
+    );
+    if (!ok) return;
+    await queueForSending(id, `Result ${id} diantrekan untuk dikirim ulang`);
   };
 
   loadInstruments();
