@@ -109,6 +109,20 @@ def konteks_baru():
     return {"ditutup_midlab": False}
 
 
+class ProtokolPalsu:
+    """
+    Protokol tanpa deklarasi transport apa pun.
+
+    _receive_loop membaca IDLE_RX_TIMEOUT dari modul protokol; yang tidak
+    mendeklarasikannya menunggu tanpa batas seperti perilaku semula. Test di
+    berkas ini menguji pelabelan penutupan koneksi, jadi semuanya memakai
+    protokol polos ini. Batas idle-nya sendiri diuji di
+    tests/test_tcp_idle_timeout.py.
+    """
+    PROTOCOL_NAME = "PALSU"
+    VERSION = "1.0.0"
+
+
 @pytest.fixture
 def svc():
     """TCPSocketService tanpa DB/socket — hanya bagian yang diuji yang diisi."""
@@ -117,6 +131,7 @@ def svc():
     s._logger.setLevel(logging.INFO)
     s._tag = "[TCP_9] [Uji]"
     s._comm = CommPalsu()
+    s._protocol = ProtokolPalsu()
     s._running = True
     s._connected = True
     s._receiver = None

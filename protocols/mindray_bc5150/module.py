@@ -66,6 +66,35 @@ class MindrayBC5150Module(BaseProtocolModule):
     # terjawab persis seperti driver lama di log.
     ANSWERS_QUERY_IN_ACK = True
 
+    # --- Pengawasan koneksi (khusus alat ini) ---------------------------
+    # Alat mengirim heartbeat <STX> tiap 3 detik tanpa henti selama menyala:
+    # ~27.700 baris "Menerima 1 bytes" per hari di tcp_3.log sejak 8 Agu 2026.
+    #
+    # Pada 7 Sep 2026 aliran itu tersendat bertahap (jeda 13s, lalu 107s, lalu
+    # 562s dengan 180 <STX> masuk sekaligus) lalu berhenti total. Tidak ada
+    # FIN, tidak ada RST, tidak ada baris reconnect selama 34 jam berikutnya:
+    # peer diam tanpa menutup, socket tetap ESTAB, dan reader.read() di
+    # TCPSocketService menggantung selamanya sampai service direstart manual.
+    #
+    # 90 detik = 30 heartbeat terlewat. Cukup longgar untuk stall sesaat yang
+    # pernah terekam (paling lama 562 detik justru sudah masuk kategori mati),
+    # cukup ketat untuk memulihkan koneksi dalam satu setengah menit.
+    IDLE_RX_TIMEOUT = 90
+
+    # Lapis kedua di kernel, tidak bergantung pada heartbeat alat. Default
+    # sistem (net.ipv4.tcp_keepalive_time = 7200) terlalu lama.
+    # 30 + 3 x 10 detik = peer mati terdeteksi ~60 detik.
+    TCP_KEEPALIVE_IDLE = 30
+    TCP_KEEPALIVE_INTERVAL = 10
+    TCP_KEEPALIVE_PROBES = 3
+
+    # Setelah koneksi dinyatakan mati, ping dulu alatnya sebelum menyambung
+    # ulang, dan tulis hasilnya ke log. Restart service selama ini menutupi
+    # pertanyaan pokoknya: kendala di sesi TCP, atau di kabel/converter/daya
+    # alat. Balasan ping memisahkan keduanya tanpa perlu orang ke lapangan.
+    # Alat ini menjawab ICMP (diuji dari server, 0% packet loss).
+    PING_BEFORE_RECONNECT = True
+
     def __init__(self):
         self._parser = MindrayBC5150Parser()
         self._builder = MindrayBC5150Builder()
