@@ -17,6 +17,7 @@ Fitur:
 
 import asyncio
 import signal
+import socket
 import sys
 
 from protocols.base import load_module
@@ -36,6 +37,16 @@ RECONNECT_DELAY = 5
 READ_TIMEOUT = None
 # Ukuran buffer baca
 READ_BUFFER_SIZE = 4096
+
+# Default keepalive bila protokol hanya menyetel TCP_KEEPALIVE_IDLE
+KEEPALIVE_INTERVAL_DEFAULT = 10
+KEEPALIVE_PROBES_DEFAULT = 3
+
+# Pemeriksaan jangkauan alat sebelum sambung ulang
+PING_BINARY = "ping"
+PING_TIMEOUT = 2          # detik menunggu satu balasan ICMP
+PING_RETRY_DELAY = 10     # jeda percobaan ping pertama saat alat tak terjangkau
+PING_RETRY_DELAY_MAX = 300  # batas atas jeda; gangguan fisik bisa berjam-jam
 
 
 class TCPSocketService:
@@ -158,6 +169,57 @@ class TCPSocketService:
         except Exception as e:
             self._logger.warning(f"{self._tag} enqueue status={status} gagal: {e}")
 
+    def _apply_socket_options(self, writer: asyncio.StreamWriter):
+        """
+        Pasang TCP keepalive bila modul protokol memintanya.
+
+        Dimatikan secara default (TCP_KEEPALIVE_IDLE = 0) supaya perilaku
+        protokol lain tidak berubah sedikit pun. Nilai default sistem
+        (net.ipv4.tcp_keepalive_time = 7200 detik) terlalu lama untuk alat lab:
+        koneksi setengah mati baru ketahuan dua jam kemudian.
+
+        Dibaca lewat getattr() dengan default, mengikuti pola flag protokol
+        yang sudah ada (ACK_EXPECTED_ON_NOT_FOUND, ANSWERS_QUERY_IN_ACK).
+        """
+        idle = int(getattr(self._protocol, "TCP_KEEPALIVE_IDLE", 0) or 0)
+        if idle <= 0:
+            return
+
+        sock = writer.get_extra_info("socket")
+        if sock is None:
+            return
+
+        interval = int(getattr(
+            self._protocol, "TCP_KEEPALIVE_INTERVAL", KEEPALIVE_INTERVAL_DEFAULT
+        ))
+        probes = int(getattr(
+            self._protocol, "TCP_KEEPALIVE_PROBES", KEEPALIVE_PROBES_DEFAULT
+        ))
+
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            # Ketiga opsi ini khas Linux; hasattr menjaga agar service tetap
+            # jalan di platform yang tidak punya.
+            for nama, nilai in (
+                ("TCP_KEEPIDLE", idle),
+                ("TCP_KEEPINTVL", interval),
+                ("TCP_KEEPCNT", probes),
+            ):
+                if hasattr(socket, nama):
+                    sock.setsockopt(
+                        socket.IPPROTO_TCP, getattr(socket, nama), nilai
+                    )
+            self._logger.info(
+                f"{self._tag} TCP keepalive aktif: idle={idle}s "
+                f"interval={interval}s probes={probes}"
+            )
+        except OSError as e:
+            # Bukan alasan untuk menggagalkan koneksi — idle watchdog di
+            # receive loop tetap jadi pengaman.
+            self._logger.warning(
+                f"{self._tag} Gagal memasang TCP keepalive: {e}"
+            )
+
     def _signal_handler(self, sig):
         """Handle SIGTERM/SIGINT — trigger graceful shutdown."""
         sig_name = signal.Signals(sig).name
@@ -225,6 +287,7 @@ class TCPSocketService:
         self._writer = writer
         self._konteks_koneksi = konteks
         self._connected = True
+        self._apply_socket_options(writer)
         self._emit_lis_status("online")
 
         # Spawn komponen dan jalankan receive loop
@@ -288,6 +351,7 @@ class TCPSocketService:
                     f"{self._tag} Connected to "
                     f"{self._config.ip_address}:{self._config.port}"
                 )
+                self._apply_socket_options(writer)
                 self._emit_lis_status("online")
 
                 # Spawn komponen dan jalankan receive loop
@@ -308,6 +372,15 @@ class TCPSocketService:
                     f"{RECONNECT_DELAY}s..."
                 )
                 self._emit_lis_status("error", str(e))
+
+            if not self._running:
+                break
+
+            # Sebelum mencoba lagi, catat dulu di log apakah alatnya memang
+            # masih terjangkau. Dipasang di sini supaya mencakup kedua jalan
+            # menuju sambung ulang: receive loop yang berakhir (idle timeout,
+            # FIN, RST) dan percobaan konek yang gagal.
+            await self._tunggu_alat_bisa_dihubungi()
 
             if not self._running:
                 break
@@ -350,6 +423,11 @@ class TCPSocketService:
         """
         self._logger.info(f"{self._tag} Receive loop dimulai")
 
+        # Batas hening sebelum koneksi dianggap mati. 0 = mati (default), jadi
+        # protokol yang tidak mendeklarasikannya tetap menunggu tanpa batas
+        # persis seperti sebelumnya.
+        idle_timeout = float(getattr(self._protocol, "IDLE_RX_TIMEOUT", 0) or 0)
+
         while self._running:
             # Dicek di awal iterasi, bukan hanya sebagai syarat while: penutupan
             # oleh MidLab bisa terjadi sebelum read() sempat dipanggil lagi, dan
@@ -359,7 +437,21 @@ class TCPSocketService:
                 break
 
             try:
-                data = await reader.read(READ_BUFFER_SIZE)
+                if idle_timeout > 0:
+                    # except-nya dipasang rapat di sekeliling read() saja.
+                    # Kalau dipasang di blok try besar ini, TimeoutError dari
+                    # jalur dispatch — QueryHandler dan BroadcastWorker
+                    # sama-sama menunggu ACK 15 detik — akan salah dilaporkan
+                    # sebagai koneksi mati lalu memutus koneksi yang sehat.
+                    try:
+                        data = await asyncio.wait_for(
+                            reader.read(READ_BUFFER_SIZE), timeout=idle_timeout
+                        )
+                    except asyncio.TimeoutError:
+                        self._tutup_karena_bisu(writer, idle_timeout)
+                        break
+                else:
+                    data = await reader.read(READ_BUFFER_SIZE)
                 if data:
                     self._comm.rx(data)
 
@@ -397,6 +489,154 @@ class TCPSocketService:
                 break
 
         self._logger.info(f"{self._tag} Receive loop selesai")
+
+    async def _ping_alat(self, timeout: float = PING_TIMEOUT):
+        """
+        Kirim satu ICMP echo ke alat.
+
+        Return:
+            True  — alat membalas
+            False — tidak ada balasan dalam batas waktu
+            None  — ping tidak bisa dijalankan, jadi tidak ada kesimpulan
+
+        None sengaja dibedakan dari False. "Tidak tahu" dan "tidak terjangkau"
+        menuntun teknisi ke tempat yang berbeda, dan gate di bawah juga
+        memperlakukannya berbeda.
+
+        Dijalankan lewat /usr/bin/ping, bukan raw socket: binary-nya membawa
+        capability cap_net_raw=ep sehingga user `midlab` yang menjalankan
+        service ini bisa memakainya tanpa hak akses tambahan.
+        """
+        ip = self._config.ip_address
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                PING_BINARY, "-n", "-c", "1", "-W", str(int(timeout)), ip,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except (OSError, NotImplementedError) as e:
+            self._logger.warning(
+                f"{self._tag} Ping tidak bisa dijalankan: {e}"
+            )
+            return None
+
+        try:
+            keluaran, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout + 3
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False
+
+        balas = proc.returncode == 0
+        rincian = ""
+        for baris in keluaran.decode(errors="replace").splitlines():
+            # Baris rtt memuat angka yang berguna untuk menilai kualitas link.
+            if "time=" in baris or "rtt" in baris:
+                rincian = baris.strip()
+        if rincian:
+            self._logger.info(f"{self._tag} ping {ip}: {rincian}")
+        return balas
+
+    async def _tunggu_alat_bisa_dihubungi(self):
+        """
+        Sebelum sambung ulang, pastikan dulu alat masih terjangkau di jaringan.
+
+        Tujuannya menjawab pertanyaan yang selama ini tidak terjawab di log:
+        saat koneksi mati, kendalanya di sisi mana. Balasan ping memisahkan
+        dua dunia yang selama ini terlihat sama:
+
+            ping BALAS      → kabel/switch/converter sampai alat sehat, yang
+                              mati hanya sesi TCP-nya. Sambung ulang wajar.
+            ping TIDAK BALAS → alat tidak terjangkau sama sekali. Menyambung
+                              ulang percuma sampai sisi fisik dibereskan.
+
+        Aktif hanya untuk protokol yang meminta (PING_BEFORE_RECONNECT), jadi
+        alat lain tetap menyambung ulang persis seperti sebelumnya.
+        """
+        if not getattr(self._protocol, "PING_BEFORE_RECONNECT", False):
+            return
+
+        ip = self._config.ip_address
+        percobaan = 0
+
+        while self._running:
+            percobaan += 1
+            hasil = await self._ping_alat()
+
+            if hasil is None:
+                # Tanpa alat ukur, jangan menahan koneksi — biarkan jalur
+                # sambung ulang biasa yang menentukan.
+                self._logger.warning(
+                    f"{self._tag} Ping tidak tersedia, sambung ulang "
+                    f"diteruskan tanpa pemeriksaan jaringan"
+                )
+                return
+
+            if hasil:
+                self._logger.info(
+                    f"{self._tag} Ping {ip} BALAS setelah {percobaan} "
+                    f"percobaan — jaringan ke alat sehat, jadi yang mati "
+                    f"hanya sesi TCP-nya. Menyambung ulang."
+                )
+                return
+
+            jeda = self._jeda_ping_berikutnya(percobaan)
+            self._logger.warning(
+                f"{self._tag} Ping {ip} TIDAK BALAS (percobaan {percobaan}) — "
+                f"alat tidak terjangkau di jaringan. Periksa kabel, converter "
+                f"RS232-to-LAN, port switch, dan daya alat. Sambung ulang "
+                f"ditunda sampai ping berhasil; coba lagi {jeda:.0f}s."
+            )
+
+            # Sekali saja per gangguan. Statusnya tidak berubah selama alat
+            # tetap tak terjangkau, dan LogPusher mengirim tiap WARN/ERROR ke
+            # LIS — tanpa penjagaan ini satu gangguan panjang membanjiri
+            # tbl_lis_event_queue dengan baris yang identik.
+            if percobaan == 1:
+                self._emit_lis_status("error", "alat tidak menjawab ping")
+
+            # Jeda yang bisa dipotong SIGTERM.
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=jeda
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
+
+    def _jeda_ping_berikutnya(self, percobaan: int) -> float:
+        """
+        Jeda sebelum percobaan ping berikutnya, naik dua kali lipat tiap gagal
+        sampai batas atas.
+
+        Gangguan fisik (kabel lepas, alat dimatikan semalaman) bisa berjam-jam.
+        Menahan jeda di 10 detik berarti ribuan baris WARNING identik untuk satu
+        gangguan, dan tiap WARNING itu ikut terkirim ke LIS oleh LogPusher.
+        Naik bertahap membuat menit-menit pertama tetap responsif sementara
+        gangguan panjang tidak menenggelamkan log.
+        """
+        jeda = PING_RETRY_DELAY * (2 ** (percobaan - 1))
+        return float(min(jeda, PING_RETRY_DELAY_MAX))
+
+    def _tutup_karena_bisu(self, writer: asyncio.StreamWriter, batas: float):
+        """
+        Putuskan koneksi yang tidak lagi mengirim apa pun.
+
+        Peer berhenti mengirim tanpa FIN maupun RST. Socket tetap ESTAB dan
+        read() menggantung selamanya, jadi tidak ada satu pun jalur reconnect
+        yang tersentuh — persis kejadian BC-5150 7 Sep 2026 yang baru pulih
+        34 jam kemudian karena service direstart manual. Ditutup di sini
+        supaya loop client menyambung ulang dan loop server menunggu koneksi
+        baru.
+        """
+        self._logger.warning(
+            f"{self._tag} Tidak ada data {batas:.0f} detik — "
+            f"koneksi dianggap mati, tutup dan sambung ulang"
+        )
+        self._emit_lis_status("error", f"idle timeout {batas:.0f}s")
+        writer.close()
 
     def _log_penutupan(self, konteks: dict, reset: bool):
         """
