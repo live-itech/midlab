@@ -167,11 +167,32 @@ RESP_201 = {
 
 
 def test_ringkasan_respons():
-    summary, issues = summarize_qc_response(RESP_201)
+    summary, issues, infos = summarize_qc_response(RESP_201)
     assert summary == "recorded=1 duplicate=0 unmapped=1 rejected=1"
     assert issues == [
         "ALT: ditolak Westgard (1-3s)",
         "T-Bill: unmapped (unmapped_parameter)",
+    ]
+    assert infos == []
+
+
+def test_ringkasan_kontrol_otomatis():
+    body = {"data": {
+        "recorded_count": 2, "controls_created": 2,
+        "results": [
+            {"test_code": "ALT", "status": "recorded", "controls_created": True,
+             "needs_review": True, "level_mismatch": False},
+            {"test_code": "GLUC", "status": "recorded", "controls_created": 1,
+             "needs_review": False, "level_mismatch": {"sent": "2", "expected": "1"}},
+        ],
+    }}
+    summary, issues, infos = summarize_qc_response(body)
+    assert summary.endswith(" controls_created=2")
+    assert issues == ["GLUC: level_mismatch (sent=2,expected=1)"]
+    assert infos == [
+        "ALT: kontrol dibuat otomatis",
+        "ALT: kontrol perlu ditinjau",
+        "GLUC: kontrol dibuat otomatis (1)",
     ]
 
 

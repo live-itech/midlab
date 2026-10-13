@@ -254,12 +254,25 @@ def build_qc_payload(result_row, instrument) -> dict:
     return payload
 
 
-def summarize_qc_response(body: dict) -> tuple[str, list[str]]:
+def _describe(value) -> str:
+    """Nilai field respons → teks log: bool cukup labelnya, selain itu ikut nilainya."""
+    if value is True:
+        return ""
+    if isinstance(value, (list, tuple)):
+        value = ",".join(str(v) for v in value)
+    elif isinstance(value, dict):
+        value = ",".join(f"{k}={v}" for k, v in value.items())
+    return f" ({value})"
+
+
+def summarize_qc_response(body: dict) -> tuple[str, list[str], list[str]]:
     """
     Ringkas respons 201 /qc-results.
 
     Returns:
-        (ringkasan satu baris, daftar masalah per parameter — unmapped/ditolak)
+        (ringkasan satu baris,
+         masalah per parameter — unmapped / ditolak Westgard / level_mismatch,
+         info per parameter — controls_created / needs_review)
     """
     data = (body or {}).get("data") or {}
     summary = (
@@ -268,7 +281,9 @@ def summarize_qc_response(body: dict) -> tuple[str, list[str]]:
         f"unmapped={data.get('unmapped_count', 0)} "
         f"rejected={data.get('rejected_count', 0)}"
     )
-    issues = []
+    if data.get("controls_created"):
+        summary += f" controls_created={data['controls_created']}"
+    issues, infos = [], []
     for r in data.get("results") or []:
         if not isinstance(r, dict):
             continue
@@ -279,7 +294,16 @@ def summarize_qc_response(body: dict) -> tuple[str, list[str]]:
             flags = r.get("westgard_flags") or []
             flags = ",".join(flags) if isinstance(flags, list) else str(flags)
             issues.append(f"{code}: ditolak Westgard ({flags or '-'})")
-    return summary, issues
+        # Kontrol dibuat otomatis oleh EazyLab dari target alat; petugas lab
+        # perlu meninjau, dan level yang tak cocok berarti setting alat/master
+        # kontrol perlu dibetulkan.
+        if r.get("level_mismatch"):
+            issues.append(f"{code}: level_mismatch{_describe(r['level_mismatch'])}")
+        if r.get("controls_created"):
+            infos.append(f"{code}: kontrol dibuat otomatis{_describe(r['controls_created'])}")
+        if r.get("needs_review"):
+            infos.append(f"{code}: kontrol perlu ditinjau{_describe(r['needs_review'])}")
+    return summary, issues, infos
 
 
 class ResultPusher:
@@ -357,18 +381,20 @@ class ResultPusher:
             await self._handle_error(row, e)
             return
 
-        summary, issues = summarize_qc_response(body)
+        summary, issues, infos = summarize_qc_response(body)
         # Unmapped tetap 'sent': data tertampung di EazyLab ("QC Belum
         # Terpetakan") dan masuk grafik bila dikirim ulang dengan message_id
         # yang sama setelah kontrol/mapping didaftarkan. Masalahnya dicatat di
         # error_message supaya terlihat di Result Monitor.
-        note = "; ".join(issues) or None
+        note = "; ".join(issues + infos) or None
         await asyncio.get_event_loop().run_in_executor(
             None, self._update_status, row.id, "sent", note,
         )
         self._logger.info(f"result_id={row.id} QC sent {payload['message_id']} {summary}")
         for issue in issues:
             self._logger.warning(f"result_id={row.id} QC {payload['message_id']} {issue}")
+        for info in infos:
+            self._logger.info(f"result_id={row.id} QC {payload['message_id']} {info}")
 
     async def _handle_error(self, row, e: LisApiError):
         """422/4xx → failed permanen; 5xx/network → retry sampai retry_max."""
