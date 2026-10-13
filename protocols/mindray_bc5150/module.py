@@ -41,6 +41,7 @@ from protocols.mindray_bc5150.constants import (
     EVENT_ORM_O01, EVENT_ORU_R01,
     RESULT_EVENTS, QUERY_EVENTS,
     DIAGNOSTIC_SERV_HEMATOLOGY,
+    PROC_QC, SERVICE_QC_LJ,
 )
 from protocols.mindray_bc5150.parser import MindrayBC5150Parser, field
 from protocols.mindray_bc5150.builder import MindrayBC5150Builder
@@ -177,6 +178,8 @@ class MindrayBC5150Module(BaseProtocolModule):
 
         try:
             self._assemble_sample(segments, result)
+            if self._is_qc(msh, segments):
+                self._mark_qc(result)
         except Exception as e:
             result.parse_errors.append(f"Parse gagal: {e}")
             self._logger.error(f"Parse gagal: {e}")
@@ -261,6 +264,34 @@ class MindrayBC5150Module(BaseProtocolModule):
 
         if not obx_found:
             result.parse_errors.append("Tidak ada segment OBX (hasil kosong)")
+
+    def _is_qc(self, msh: dict, segments: list) -> bool:
+        """
+        Hasil QC ditandai dua cara di dok: MSH-11 = "Q" (§4.3.1) dan OBR-4 =
+        `00003^LJ QCR^99MRC` (§5.7 Tabel 4-10). Salah satu cukup — belum ada
+        pesan QC sungguhan di log, jadi tidak bergantung pada satu penanda.
+        """
+        if msh.get("processing_id") == PROC_QC:
+            return True
+        obr_fields = self._parser.find_segment(segments, SEG_OBR)
+        if obr_fields:
+            panel_code = self._parser.parse_obr(obr_fields)["panel_code"]
+            return panel_code == SERVICE_QC_LJ.split("^")[0]
+        return False
+
+    def _mark_qc(self, result: ResultObject):
+        """
+        Tandai hasil QC selaras dengan driver BS-200E/AR580:
+        specimen.sample_type = "qc" dan status tiap hasil = "qc".
+        """
+        result.specimen.sample_type = "qc"
+        for hasil in result.results:
+            hasil.status = "qc"
+        # QC tidak wajib punya Sample ID — buang error OBR-3 kosong.
+        result.parse_errors = [
+            e for e in result.parse_errors if not e.startswith("Sample ID (OBR-3)")
+        ]
+        self._logger.info("Pesan hasil QC — ditandai sample_type=qc")
 
     # ============================================================
     # Hook opsional untuk ResultReceiver

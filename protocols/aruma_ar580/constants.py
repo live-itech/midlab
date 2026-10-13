@@ -33,6 +33,12 @@ HL7_VERSION = "2.3.1"       # MSH-12 — dikunci dokumen bab 1.1
 CHARACTER_SET = "UTF-8"     # MSH-18 — dokumen bab 1.4
 COUNTRY_CODE = "CHA"        # MSH-17 — nilai contoh dokumen
 
+# MSH-11 = "Q" menandai hasil QC, bukan pasien. Tidak tertulis di dokumen (bab
+# 2.3.2 QC upload masih kosong) — diamati dari alat di lapangan: pesan QC
+# membawa no. file QC di PID-3, lot kontrol di PID-4, expired di PID-7, dan
+# "target-limit" (mis. "91.3-5") di OBX-7 menggantikan rentang rujukan.
+PROC_QC = "Q"
+
 # MSH-3/MSH-4 pada pesan ACK (LIS → alat).
 LIS_SENDING_APP = "MidLab"
 LIS_SENDING_FACILITY = ""
@@ -107,12 +113,15 @@ META_WBC_ALARM = "WBC Alarm"         # alarm morfologi — mis. "Microcytosis"
 META_RBC_ALARM = "RBC Alarm"
 META_PLT_ALARM = "PLT Alarm"
 META_PRINT_BMP = "Print_BMP"         # penanda cetak internal alat
+META_QC_LEVEL = "QC Level"           # pesan QC: level kontrol (L/M/H)
+META_QC_TYPE = "QC Type"             # pesan QC: jenis QC (sering kosong)
 
 METADATA_IDENTIFIERS = frozenset({
     META_BLOOD_MODE, META_TEST_MODE, META_REF_GROUP,
     META_AGE, META_REMARKS, META_BLOOD_TYPE,
     META_TAKE_MODE, META_LOW_MODE, META_RECHECK_FLAG,
     META_WBC_ALARM, META_RBC_ALARM, META_PLT_ALARM, META_PRINT_BMP,
+    META_QC_LEVEL, META_QC_TYPE,
 })
 
 

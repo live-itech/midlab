@@ -10,6 +10,7 @@ Kekhasan alat ini yang menyimpang dari kebiasaan HL7 umum (semua dari dokumen):
     komponen, jadi field ini WAJIB dibaca mentah.
   - PID-5 bisa berbentuk "&LName&&&" — nama ada di subkomponen.
   - OBX-13 field custom vendor untuk status edit (null/O/E/e).
+  - MSH-11 = "Q" berarti hasil QC (lihat _terapkan_qc) — hanya dari lapangan.
 """
 
 from lib.models import ResultObject, TestResult
@@ -19,7 +20,7 @@ from protocols.aruma_ar580.constants import (
     MLLP_START_BYTE, MLLP_END_BYTE, MLLP_TRAILER,
     FIELD_SEPARATOR, COMPONENT_SEP, SUBCOMPONENT_SEP,
     SEG_MSH, SEG_PID, SEG_PV1, SEG_OBR, SEG_OBX,
-    PROTOCOL_NAME,
+    PROTOCOL_NAME, PROC_QC,
     VT_ENCAPSULATED,
     METADATA_IDENTIFIERS,
     META_BLOOD_MODE, META_TEST_MODE, META_REMARKS,
@@ -142,6 +143,8 @@ def parse_oru(raw_bytes: bytes, instrument: dict) -> dict:
         return result.to_dict()
 
     jumlah_ed = 0
+    msh = next(s for s in segments if s.startswith(SEG_MSH))
+    is_qc = _field(_fields(msh), 10) == PROC_QC
 
     for segment in segments:
         nama = segment[:3]
@@ -149,7 +152,10 @@ def parse_oru(raw_bytes: bytes, instrument: dict) -> dict:
             if nama == SEG_MSH:
                 _parse_msh(segment, instrument)
             elif nama == SEG_PID:
-                _parse_pid(segment, result)
+                if is_qc:
+                    _parse_pid_qc(segment, result)
+                else:
+                    _parse_pid(segment, result)
             elif nama == SEG_PV1:
                 _parse_pv1(segment, result)
             elif nama == SEG_OBR:
@@ -160,6 +166,9 @@ def parse_oru(raw_bytes: bytes, instrument: dict) -> dict:
         except Exception as e:
             result.parse_errors.append(f"Gagal parse segment {nama}: {e}")
             logger.warning(f"Gagal parse segment {nama}: {e}")
+
+    if is_qc:
+        _terapkan_qc(result)
 
     if jumlah_ed:
         # Bitmap histogram/scattergram sengaja tidak disimpan — lihat spec.
@@ -206,6 +215,53 @@ def _parse_pid(segment: str, result: ResultObject) -> None:
     rekam_medis = decode_escape(_field(f, 4))
     if rekam_medis:
         result.comments.append(f"No. rekam medis: {rekam_medis}")
+
+
+def _parse_pid_qc(segment: str, result: ResultObject) -> None:
+    """
+    PID pada pesan QC (MSH-11 = Q) — isinya identitas bahan kontrol, bukan pasien.
+
+    Contoh dari alat: `PID|1||1|0526N|||01-08-2026|...`
+        PID-3 = no. file QC (1, 2, ...) — BUKAN no. sampel. Bila dipakai sebagai
+                sample_id ia bentrok dengan sampel pasien bernomor sama di LIS.
+        PID-4 = no. lot kontrol
+        PID-7 = tanggal expired kontrol — bukan tanggal lahir
+
+    Patient & sample_id sengaja dibiarkan kosong, sama seperti QC BS-200E;
+    identitas kontrol dibawa lewat comments.
+    """
+    f = _fields(segment)
+    for label, value in (
+        ("qc_file", _field(f, 3)),
+        ("lot_number", _field(f, 4)),
+        ("expiration_date", _field(f, 7)),
+    ):
+        value = decode_escape(value)
+        if value:
+            result.comments.append(f"{label}: {value}")
+
+
+def _terapkan_qc(result: ResultObject) -> None:
+    """
+    Tandai ResultObject sebagai hasil QC, selaras dengan driver BS-200E:
+    specimen.sample_type = "qc" dan status tiap hasil = "qc".
+
+    OBX-7 pesan QC berisi "target-limit" (mis. "91.3-5" = target 91.3, batas
+    5), bukan rentang rujukan. Ditulis ulang sebagai "91.3±5" agar tidak
+    terbaca sebagai rentang 91.3 s/d 5 oleh LIS maupun manusia.
+    """
+    result.specimen.sample_type = "qc"
+    for hasil in result.results:
+        hasil.status = "qc"
+        hasil.reference_range = _target_qc(hasil.reference_range)
+
+
+def _target_qc(obx7: str) -> str:
+    """'91.3-5' → '91.3±5'. Nilai yang tidak berbentuk target-limit dibiarkan."""
+    target, sep, batas = obx7.partition("-")
+    if sep and target and batas:
+        return f"{target}±{batas}"
+    return obx7
 
 
 def _parse_pv1(segment: str, result: ResultObject) -> None:
