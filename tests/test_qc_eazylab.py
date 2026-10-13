@@ -177,23 +177,29 @@ def test_ringkasan_respons():
 
 
 def test_ringkasan_kontrol_otomatis():
+    # Bentuk respons sesuai kontrak EazyLab 13 Okt 2026.
     body = {"data": {
-        "recorded_count": 2, "controls_created": 2,
+        "recorded_count": 2, "controls_created": 1,
         "results": [
-            {"test_code": "ALT", "status": "recorded", "controls_created": True,
+            {"test_code": "ALT", "status": "recorded", "control_created": True,
              "needs_review": True, "level_mismatch": False},
-            {"test_code": "GLUC", "status": "recorded", "controls_created": 1,
-             "needs_review": False, "level_mismatch": {"sent": "2", "expected": "1"}},
+            {"test_code": "GLUC", "status": "duplicate", "control_created": False,
+             "needs_review": True, "level_mismatch": True},
         ],
     }}
     summary, issues, infos = summarize_qc_response(body)
-    assert summary.endswith(" controls_created=2")
-    assert issues == ["GLUC: level_mismatch (sent=2,expected=1)"]
-    assert infos == [
-        "ALT: kontrol dibuat otomatis",
-        "ALT: kontrol perlu ditinjau",
-        "GLUC: kontrol dibuat otomatis (1)",
-    ]
+    assert summary.endswith(" controls_created=1")
+    assert issues == ["GLUC: level kiriman beda dengan level kontrol (level_mismatch)"]
+    # needs_review GLUC tidak dicatat karena kontrolnya bukan baru dibuat.
+    assert infos == ["ALT: kontrol dibuat otomatis oleh EazyLab, perlu ditinjau petugas lab"]
+
+
+def test_needs_review_saja_tidak_dicatat():
+    body = {"data": {"results": [
+        {"test_code": "ALT", "status": "recorded", "control_created": False,
+         "needs_review": True, "level_mismatch": False},
+    ]}}
+    assert summarize_qc_response(body)[1:] == ([], [])
 
 
 # ------------------------------------------------------------
