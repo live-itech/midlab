@@ -254,25 +254,22 @@ def build_qc_payload(result_row, instrument) -> dict:
     return payload
 
 
-def _describe(value) -> str:
-    """Nilai field respons → teks log: bool cukup labelnya, selain itu ikut nilainya."""
-    if value is True:
-        return ""
-    if isinstance(value, (list, tuple)):
-        value = ",".join(str(v) for v in value)
-    elif isinstance(value, dict):
-        value = ",".join(f"{k}={v}" for k, v in value.items())
-    return f" ({value})"
-
-
 def summarize_qc_response(body: dict) -> tuple[str, list[str], list[str]]:
     """
     Ringkas respons 201 /qc-results.
 
+    Kontrak EazyLab (13 Okt 2026):
+        data.controls_created          int  — kontrol baru dari payload ini
+        data.results[].control_created bool — kontrol parameter ini baru dibuat
+        data.results[].needs_review    bool — status kontrol; tetap true sampai
+                                              ditinjau, jadi TIDAK dicatat sendiri
+        data.results[].level_mismatch  bool — level kiriman ≠ level kontrol
+    Ketiga field per parameter hanya ada untuk recorded/duplicate.
+
     Returns:
         (ringkasan satu baris,
          masalah per parameter — unmapped / ditolak Westgard / level_mismatch,
-         info per parameter — controls_created / needs_review)
+         info per parameter — kontrol baru dibuat)
     """
     data = (body or {}).get("data") or {}
     summary = (
@@ -294,15 +291,17 @@ def summarize_qc_response(body: dict) -> tuple[str, list[str], list[str]]:
             flags = r.get("westgard_flags") or []
             flags = ",".join(flags) if isinstance(flags, list) else str(flags)
             issues.append(f"{code}: ditolak Westgard ({flags or '-'})")
-        # Kontrol dibuat otomatis oleh EazyLab dari target alat; petugas lab
-        # perlu meninjau, dan level yang tak cocok berarti setting alat/master
-        # kontrol perlu dibetulkan.
-        if r.get("level_mismatch"):
-            issues.append(f"{code}: level_mismatch{_describe(r['level_mismatch'])}")
-        if r.get("controls_created"):
-            infos.append(f"{code}: kontrol dibuat otomatis{_describe(r['controls_created'])}")
-        if r.get("needs_review"):
-            infos.append(f"{code}: kontrol perlu ditinjau{_describe(r['needs_review'])}")
+        # Level tak cocok berarti setting level alat atau master kontrol perlu
+        # dibetulkan — relevan di tiap kiriman, jadi selalu dicatat.
+        if r.get("level_mismatch") is True:
+            issues.append(f"{code}: level kiriman beda dengan level kontrol (level_mismatch)")
+        # needs_review hanya dicatat bersama control_created: nilainya tetap
+        # true di setiap kiriman sampai ditinjau, dan akan membanjiri log.
+        if r.get("control_created") is True:
+            info = f"{code}: kontrol dibuat otomatis oleh EazyLab"
+            if r.get("needs_review") is True:
+                info += ", perlu ditinjau petugas lab"
+            infos.append(info)
     return summary, issues, infos
 
 
