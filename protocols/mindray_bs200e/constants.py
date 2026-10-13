@@ -71,6 +71,16 @@ RESULT_TYPE_SAMPLE = "0"
 RESULT_TYPE_CALIBRATION = "1"
 RESULT_TYPE_QC = "2"
 
+# Pesan QC hanya membawa no. tes (OBR-2) dan NAMA tes (OBR-3); kode tes yang
+# dipakai hasil pasien (OBX-3) tidak ikut. Umumnya nama = kode (ALT, GLUC),
+# tapi tidak untuk bilirubin. Padanan diambil dari pesan pasien alat ini
+# (OBX-3 kode / OBX-4 nama): "T-BIL"/"T-Bill", "D-BIL"/"D-Bill". Kunci
+# huruf besar — pencocokan tidak peka huruf. Nama di luar tabel dipakai apa adanya.
+QC_TEST_NAME_TO_CODE = {
+    "T-BILL": "T-BIL",
+    "D-BILL": "D-BIL",
+}
+
 
 # ============================================================
 # MSA — acknowledgment
