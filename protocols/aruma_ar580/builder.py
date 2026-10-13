@@ -22,7 +22,7 @@ from protocols.aruma_ar580.constants import (
     FIELD_SEPARATOR, ENCODING_CHARACTERS, SEGMENT_TERMINATOR,
     SEG_MSH, SEG_MSA,
     HL7_VERSION, CHARACTER_SET, COUNTRY_CODE,
-    PROC_PRODUCTION,
+    PROC_PRODUCTION, PROC_QC,
     EVENT_ACK_R01,
     ACK_AA, MSA_TEXT_ACCEPTED, STATUS_CODE_OK,
     LIS_SENDING_APP, LIS_SENDING_FACILITY,
@@ -68,8 +68,15 @@ def build_ack(raw_message: bytes, instrument: dict,
         )
         return b""
 
-    control_id = _field(_fields(msh), 9)
+    msh_fields = _fields(msh)
+    control_id = _field(msh_fields, 9)
     stempel = timestamp or _timestamp()
+
+    # MSH-11 dipantulkan (P/Q). ACK berlabel "P" atas hasil QC ("Q") tidak
+    # diakui alat: di log, setiap pesan QC dikirim ulang ±10 detik kemudian.
+    processing_id = (
+        PROC_QC if _field(msh_fields, 10) == PROC_QC else PROC_PRODUCTION
+    )
 
     # MSH-5/6 sengaja dikosongkan, bukan diisi identitas alat. AR580 di lapangan
     # mengirim MSH-3..6 kosong; mengisinya dengan nama vendor hasil tebakan
@@ -85,7 +92,7 @@ def build_ack(raw_message: bytes, instrument: dict,
         "",                     # MSH-8
         EVENT_ACK_R01,          # MSH-9
         control_id,             # MSH-10
-        PROC_PRODUCTION,        # MSH-11
+        processing_id,          # MSH-11 — dipantulkan, lihat di atas
         HL7_VERSION,            # MSH-12
         "", "", "", "",         # MSH-13..16
         COUNTRY_CODE,           # MSH-17

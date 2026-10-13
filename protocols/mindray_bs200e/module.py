@@ -40,6 +40,28 @@ from protocols.mindray_bs200e.parser import MindrayParser
 from protocols.mindray_bs200e.builder import MindrayBuilder
 
 
+def _strip_lot_prefix(lot: str) -> str:
+    """
+    "Lot No.360617" → "360617".
+
+    Alat menulis label "Lot No." di depan nomor lot (OBR-14, dari log). EazyLab
+    mencocokkan kontrol lewat nomor lot persis seperti yang didaftarkan petugas.
+    """
+    lot = (lot or "").strip()
+    for prefix in ("Lot No.", "Lot No", "LOT NO.", "LOT NO"):
+        if lot.startswith(prefix):
+            return lot[len(prefix):].strip()
+    return lot
+
+
+def _hl7_date(value: str) -> str:
+    """HL7 TS "20270514000000" → "2027-05-14"; selain itu dikembalikan apa adanya."""
+    v = (value or "").strip()
+    if len(v) >= 8 and v[:8].isdigit():
+        return f"{v[:4]}-{v[4:6]}-{v[6:8]}"
+    return v
+
+
 class MindrayBS200EModule(BaseProtocolModule):
     """Protocol module Mindray BS-200E — HL7 v2.3.1 di atas MLLP."""
 
@@ -116,10 +138,11 @@ class MindrayBS200EModule(BaseProtocolModule):
             self._logger.warning(f"parse() dipanggil untuk message type {message_type}")
 
         result_type = msh.get("result_type", "") or RESULT_TYPE_SAMPLE
+        qc_block = None
 
         try:
             if result_type == RESULT_TYPE_QC:
-                self._assemble_qc(segments, result)
+                qc_block = self._assemble_qc(segments, result)
             elif result_type == RESULT_TYPE_CALIBRATION:
                 self._assemble_calibration(segments, result)
             else:
@@ -132,7 +155,13 @@ class MindrayBS200EModule(BaseProtocolModule):
             f"Parse selesai: type={result_type}, {len(result.results)} hasil, "
             f"{len(result.comments)} komentar, {len(result.parse_errors)} error"
         )
-        return result.to_dict()
+        parsed = result.to_dict()
+        if qc_block:
+            # Blok `qc` di luar ResultObject (seperti instrument_meta Glory):
+            # LisBridge memakai keberadaannya untuk merutekan baris ini ke
+            # POST /qc-results, bukan /results.
+            parsed["qc"] = qc_block
+        return parsed
 
     def _assemble_sample(self, segments: list, result: ResultObject):
         """Rakit ResultObject untuk hasil sampel (MSH-16 = 0): PID + OBR + OBX."""
@@ -201,25 +230,32 @@ class MindrayBS200EModule(BaseProtocolModule):
         if not obx_found:
             result.parse_errors.append("Tidak ada segment OBX (hasil kosong)")
 
-    def _assemble_qc(self, segments: list, result: ResultObject):
+    def _assemble_qc(self, segments: list, result: ResultObject) -> dict | None:
         """
         Rakit ResultObject untuk hasil QC (MSH-16 = 2).
 
         Pesan QC tidak punya PID/OBX — seluruh datanya ada di OBR.
+
+        Returns:
+            Blok `qc` terstruktur untuk EazyLab, atau None bila OBR tidak ada.
         """
         obr_fields = self._parser.find_segment(segments, SEG_OBR)
         if obr_fields is None:
             result.parse_errors.append("Pesan QC tanpa segment OBR")
-            return
+            return None
 
         qc = self._parser.parse_obr_qc(obr_fields)
+        # OBR-2 hanya nomor urut tes di alat (22); kode yang dipakai hasil
+        # pasien (OBX-3) adalah nama tes di OBR-3 (ALT). EazyLab mencocokkan QC
+        # memakai mapping kode yang sama dengan pasien, jadi pakai OBR-3.
+        test_code = qc["test_name"] or qc["test_code"]
 
         result.specimen = SpecimenInfo(
             sample_type="qc",
             collected_at=qc["qc_datetime"],
         )
         result.results.append(TestResult(
-            test_code=qc["test_code"],
+            test_code=test_code,
             test_name=qc["test_name"],
             value=qc["value"],
             unit=qc["unit"],
@@ -233,9 +269,24 @@ class MindrayBS200EModule(BaseProtocolModule):
             ("expiration_date", qc["expiration_date"]),
             ("mean_value", qc["mean_value"]),
             ("standard_deviation", qc["standard_deviation"]),
+            ("test_no", qc["test_code"]),
         ):
             if value:
                 result.comments.append(f"{label}: {value}")
+
+        return {
+            "lot_number": _strip_lot_prefix(qc["lot_number"]),
+            "level": qc["level"],
+            "control_name": qc["control_name"],
+            "expiry_date": _hl7_date(qc["expiration_date"]),
+            "run_at": qc["qc_datetime"],
+            "targets": {
+                test_code: {
+                    "mean": qc["mean_value"],
+                    "sd": qc["standard_deviation"],
+                },
+            },
+        }
 
     def _assemble_calibration(self, segments: list, result: ResultObject):
         """
