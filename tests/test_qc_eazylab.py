@@ -63,6 +63,17 @@ def test_driver_qc_memakai_nama_tes_sebagai_kode(parsed):
     assert parsed["results"][0]["test_code"] == "ALT"
 
 
+@pytest.mark.parametrize("nama,kode", [("T-Bill", "T-BIL"), ("D-Bill", "D-BIL"), ("GLUC", "GLUC")])
+def test_driver_qc_bilirubin_memakai_kode_pasien(nama, kode):
+    # Pesan pasien BS-200E: OBX-3 "T-BIL" / OBX-4 "T-Bill"; pesan QC hanya
+    # membawa nama "T-Bill" → harus dikirim dengan kode pasien.
+    raw = BS200E_QC.replace(b"|22|ALT|", b"|30|" + nama.encode() + b"|")
+    hasil = MindrayBS200EModule().parse(raw, INSTRUMENT)
+    assert hasil["results"][0]["test_code"] == kode
+    assert hasil["results"][0]["test_name"] == nama
+    assert list(hasil["qc"]["targets"]) == [kode]
+
+
 def test_driver_menghasilkan_blok_qc(parsed):
     assert parsed["qc"] == {
         "lot_number": "360617",

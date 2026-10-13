@@ -35,6 +35,7 @@ from protocols.mindray_bs200e.constants import (
     ACK_AA, ACK_AE, ACK_AR,
     EVENT_ORU_R01, QUERY_EVENTS,
     RESULT_TYPE_SAMPLE, RESULT_TYPE_CALIBRATION, RESULT_TYPE_QC,
+    QC_TEST_NAME_TO_CODE,
 )
 from protocols.mindray_bs200e.parser import MindrayParser
 from protocols.mindray_bs200e.builder import MindrayBuilder
@@ -246,9 +247,10 @@ class MindrayBS200EModule(BaseProtocolModule):
 
         qc = self._parser.parse_obr_qc(obr_fields)
         # OBR-2 hanya nomor urut tes di alat (22); kode yang dipakai hasil
-        # pasien (OBX-3) adalah nama tes di OBR-3 (ALT). EazyLab mencocokkan QC
-        # memakai mapping kode yang sama dengan pasien, jadi pakai OBR-3.
-        test_code = qc["test_name"] or qc["test_code"]
+        # pasien (OBX-3) diturunkan dari nama tes di OBR-3 (ALT). EazyLab
+        # mencocokkan QC memakai mapping kode yang sama dengan pasien.
+        name = qc["test_name"]
+        test_code = QC_TEST_NAME_TO_CODE.get(name.upper(), name) or qc["test_code"]
 
         result.specimen = SpecimenInfo(
             sample_type="qc",
