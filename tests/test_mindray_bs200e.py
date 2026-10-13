@@ -121,7 +121,8 @@ def test_parse_hasil_qc(module):
 
     assert parsed["specimen"]["sample_type"] == "qc"
     assert len(parsed["results"]) == 1
-    assert parsed["results"][0]["test_code"] == "1"
+    # OBR-3 (nama) dipakai sebagai kode, bukan nomor urut OBR-2
+    assert parsed["results"][0]["test_code"] == "test1"
     assert parsed["results"][0]["value"] == "0.11029"
     assert parsed["results"][0]["status"] == "qc"
     assert "control_name: QUAL1" in parsed["comments"]

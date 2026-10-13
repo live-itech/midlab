@@ -1,7 +1,8 @@
 """
 services/lis_bridge/result_pusher.py — Push tbl_result pending ke LIS.
 
-Loop: poll tbl_result → POST /results → update send_status.
+Loop: poll tbl_result → POST /results (atau /qc-results untuk baris QC)
+→ update send_status.
 2xx → 'sent'. 422 → 'failed' permanen. 5xx/network → bump retry_count;
 'pending' kalau belum exhausted, 'failed' kalau retry_count>=retry_max.
 """
@@ -153,6 +154,134 @@ def build_mid_payload(result_row, instrument) -> dict:
     return payload
 
 
+# ============================================================
+# QC → POST /qc-results (kontrak EazyLab)
+# ============================================================
+
+# Level kontrol dari alat → format yang dikenal EazyLab (1/2/3). Huruf L/M/H
+# belum didukung di sana.
+_QC_LEVEL_MAP = {"L": "1", "M": "2", "H": "3"}
+
+
+class QcPayloadError(ValueError):
+    """Baris QC tidak bisa dibentuk jadi payload valid — tidak ada gunanya retry."""
+
+
+def is_qc_row(result_row) -> bool:
+    """Baris hasil QC: driver menandai specimen.sample_type = "qc"."""
+    rj = result_row.result_json or {}
+    spec = rj.get("specimen") or {}
+    return isinstance(rj.get("qc"), dict) or spec.get("sample_type") == "qc"
+
+
+def _qc_level(raw: str) -> str:
+    level = (raw or "").strip()
+    return _QC_LEVEL_MAP.get(level.upper(), level)
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_qc_payload(result_row, instrument) -> dict:
+    """
+    Bangun payload POST /qc-results dari blok `qc` di result_json.
+
+    message_id deterministik {alat}-{lot}-L{level}-{run_at}: EazyLab dedup per
+    kontrol+parameter berdasar message_id, jadi kiriman ulang run yang sama
+    (alat retransmit, tombol kirim ulang) harus menghasilkan id yang sama, dan
+    id tidak boleh ikut ter-reset seperti nomor urut.
+
+    Raises:
+        QcPayloadError bila field wajib EazyLab (lot, level, run_at) kosong.
+    """
+    rj = result_row.result_json or {}
+    qc = rj.get("qc")
+    if not isinstance(qc, dict):
+        raise QcPayloadError("hasil QC tanpa data kontrol (lot/level) dari driver")
+
+    lot = (qc.get("lot_number") or "").strip()
+    level = _qc_level(qc.get("level"))
+    run_at = _to_iso8601(qc.get("run_at") or "")
+    missing = [n for n, v in (("lot_number", lot), ("level", level), ("run_at", run_at)) if not v]
+    if missing:
+        raise QcPayloadError(f"field QC wajib kosong: {', '.join(missing)}")
+
+    run_key = re.sub(r"[^0-9T]", "", run_at[:19])     # 2026-07-21T12:54:12 → 20260721T125412
+    message_id = f"MID{instrument.id}-{lot}-L{level}-{run_key}"
+
+    targets = qc.get("targets") or {}
+    results = []
+    for r in rj.get("results") or []:
+        if not isinstance(r, dict) or not r.get("test_code"):
+            continue
+        item = {
+            "test_code": r.get("test_code", ""),
+            "test_name": r.get("test_name", ""),
+            "value": r.get("value", ""),
+            "unit": r.get("unit", ""),
+            "flag": r.get("flag", ""),
+        }
+        target = targets.get(item["test_code"]) or {}
+        mean, sd = _to_float(target.get("mean")), _to_float(target.get("sd"))
+        if mean is not None:
+            item["instrument_target_mean"] = mean
+        if sd is not None:
+            item["instrument_target_sd"] = sd
+        results.append(item)
+    if not results:
+        raise QcPayloadError("hasil QC tanpa parameter")
+
+    payload = {
+        "mid_version": "1.0",
+        "message_id": message_id,
+        "message_datetime": (
+            _to_iso8601(rj.get("message_datetime"))
+            or timeutil.isoformat(result_row.received_at)
+            or timeutil.isoformat()
+        ),
+        "protocol": _normalize_protocol(rj.get("protocol")),
+        "qc": {"lot_number": lot, "level": level},
+        "run_at": run_at,
+        "results": results,
+    }
+    for key in ("control_name", "sample_id", "expiry_date"):
+        if qc.get(key):
+            payload["qc"][key] = qc[key]
+    return payload
+
+
+def summarize_qc_response(body: dict) -> tuple[str, list[str]]:
+    """
+    Ringkas respons 201 /qc-results.
+
+    Returns:
+        (ringkasan satu baris, daftar masalah per parameter — unmapped/ditolak)
+    """
+    data = (body or {}).get("data") or {}
+    summary = (
+        f"recorded={data.get('recorded_count', 0)} "
+        f"duplicate={data.get('duplicate_count', 0)} "
+        f"unmapped={data.get('unmapped_count', 0)} "
+        f"rejected={data.get('rejected_count', 0)}"
+    )
+    issues = []
+    for r in data.get("results") or []:
+        if not isinstance(r, dict):
+            continue
+        code = r.get("test_code") or "?"
+        if r.get("status") == "unmapped":
+            issues.append(f"{code}: unmapped ({r.get('reason') or '-'})")
+        elif r.get("rejected"):
+            flags = r.get("westgard_flags") or []
+            flags = ",".join(flags) if isinstance(flags, list) else str(flags)
+            issues.append(f"{code}: ditolak Westgard ({flags or '-'})")
+    return summary, issues
+
+
 class ResultPusher:
     def __init__(
         self,
@@ -193,6 +322,9 @@ class ResultPusher:
         self._running = False
 
     async def _send(self, row):
+        if is_qc_row(row):
+            await self._send_qc(row)
+            return
         payload = build_mid_payload(row, self._instrument)
         try:
             status, _ = await self._client.post_results(payload)
@@ -204,25 +336,61 @@ class ResultPusher:
                 return
             raise LisApiError(status=status, message="unexpected status", retryable=False)
         except LisApiError as e:
-            if not e.retryable:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, self._update_status, row.id, "failed", f"{e.status}: {e.message}",
-                )
-                self._logger.warning(f"result_id={row.id} failed (permanent): {e}")
-                return
-            next_count = (row.retry_count or 0) + 1
-            if next_count >= self._retry_max:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, self._update_status, row.id, "failed",
-                    f"{e.status}: {e.message} (retry exhausted)",
-                )
-                self._logger.warning(f"result_id={row.id} retry exhausted")
-            else:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, _call_with_retry_kwarg, self._update_status,
-                    row.id, "pending", f"{e.status}: {e.message}",
-                )
-                self._logger.info(f"result_id={row.id} retry {next_count}/{self._retry_max}")
+            await self._handle_error(row, e)
+
+    async def _send_qc(self, row):
+        """Kirim satu baris QC ke POST /qc-results."""
+        try:
+            payload = build_qc_payload(row, self._instrument)
+        except QcPayloadError as e:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._update_status, row.id, "failed", f"QC: {e}",
+            )
+            self._logger.warning(f"result_id={row.id} QC tidak dikirim: {e}")
+            return
+
+        try:
+            status, body = await self._client.post_qc_results(payload)
+            if not 200 <= status < 300:
+                raise LisApiError(status=status, message="unexpected status", retryable=False)
+        except LisApiError as e:
+            await self._handle_error(row, e)
+            return
+
+        summary, issues = summarize_qc_response(body)
+        # Unmapped tetap 'sent': data tertampung di EazyLab ("QC Belum
+        # Terpetakan") dan masuk grafik bila dikirim ulang dengan message_id
+        # yang sama setelah kontrol/mapping didaftarkan. Masalahnya dicatat di
+        # error_message supaya terlihat di Result Monitor.
+        note = "; ".join(issues) or None
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._update_status, row.id, "sent", note,
+        )
+        self._logger.info(f"result_id={row.id} QC sent {payload['message_id']} {summary}")
+        for issue in issues:
+            self._logger.warning(f"result_id={row.id} QC {payload['message_id']} {issue}")
+
+    async def _handle_error(self, row, e: LisApiError):
+        """422/4xx → failed permanen; 5xx/network → retry sampai retry_max."""
+        if not e.retryable:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._update_status, row.id, "failed", f"{e.status}: {e.message}",
+            )
+            self._logger.warning(f"result_id={row.id} failed (permanent): {e}")
+            return
+        next_count = (row.retry_count or 0) + 1
+        if next_count >= self._retry_max:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._update_status, row.id, "failed",
+                f"{e.status}: {e.message} (retry exhausted)",
+            )
+            self._logger.warning(f"result_id={row.id} retry exhausted")
+        else:
+            await asyncio.get_event_loop().run_in_executor(
+                None, _call_with_retry_kwarg, self._update_status,
+                row.id, "pending", f"{e.status}: {e.message}",
+            )
+            self._logger.info(f"result_id={row.id} retry {next_count}/{self._retry_max}")
 
 
 def _call_with_retry_kwarg(fn, *args):

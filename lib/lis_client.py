@@ -6,6 +6,7 @@ Endpoints:
   POST /api/v1/instrument/status          — push status
   GET  /api/v1/instrument/orders/pending  — pull orders
   POST /api/v1/instrument/results         — submit results
+  POST /api/v1/instrument/qc-results      — submit hasil QC
   POST /api/v1/instrument/logs            — push log
 
 Semua endpoint pakai Bearer auth per-alat:
@@ -84,6 +85,10 @@ class LisApiClient:
 
     async def post_results(self, payload: dict) -> tuple[int, dict]:
         return await self._request("POST", "/api/v1/instrument/results", json_body=payload)
+
+    async def post_qc_results(self, payload: dict) -> tuple[int, dict]:
+        """Hasil QC — endpoint terpisah; QC yang dikirim ke /results dianggap pasien."""
+        return await self._request("POST", "/api/v1/instrument/qc-results", json_body=payload)
 
     async def post_status(self, payload: dict) -> tuple[int, dict]:
         return await self._request("POST", "/api/v1/instrument/status", json_body=payload)
