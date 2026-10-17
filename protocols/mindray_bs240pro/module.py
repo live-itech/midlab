@@ -26,7 +26,7 @@ from lib.utils import generate_message_id, get_logger
 from protocols.mindray_bs200e import module as _bs200e
 from protocols.mindray_bs240pro.builder import BS240ProBuilder
 from protocols.mindray_bs240pro.constants import (
-    PROTOCOL_NAME, PROTOCOL_VERSION, SEG_OBR,
+    PROTOCOL_NAME, PROTOCOL_VERSION, SEG_OBR, EVENT_ORU_R01,
     QC_LEVEL_FROM_NAME, INSTRUMENT_LEVEL_TO_NUMBER, QC_CONTROLS_KEY,
     MSH15_LIS_DOWNLOAD,
 )
@@ -114,7 +114,24 @@ class MindrayBS240ProModule(_bs200e.MindrayBS200EModule):
             )
             if value
         ]
-        entries = [self._qc_entry(qc, control, run_at, common) for control in controls]
+        tag = f"[instrument {result.instrument_id}]"
+        entries = [
+            self._qc_entry(qc, control, run_at, common, tag) for control in controls
+        ]
+
+        # Pasangan (lot, level) kembar → message_id /qc-results kembar dan
+        # EazyLab membuang yang kedua sebagai duplikat. Hanya dicatat; pasangan
+        # tidak diubah.
+        seen = set()
+        for entry in entries:
+            pair = (entry["qc"]["lot_number"], entry["qc"]["level"])
+            if pair in seen:
+                msg = (f"Kontrol kembar: lot {pair[0]} level {pair[1]} muncul "
+                       f"lebih dari sekali dalam satu pesan — periksa setting "
+                       f"level kontrol di alat")
+                result.parse_errors.append(msg)
+                self._logger.warning(f"{tag} {msg}")
+            seen.add(pair)
 
         first = entries[0]
         result.specimen = SpecimenInfo(sample_type="qc", collected_at=run_at)
@@ -125,13 +142,14 @@ class MindrayBS240ProModule(_bs200e.MindrayBS200EModule):
         block[QC_CONTROLS_KEY] = entries
         return block
 
-    def _qc_entry(self, qc: dict, control: dict, run_at: str, common: list) -> dict:
+    def _qc_entry(self, qc: dict, control: dict, run_at: str, common: list,
+                  tag: str = "") -> dict:
         """Satu kontrol → {result, comments, qc} untuk satu baris tbl_result."""
         code = qc["test_code"]
         level, conflict = resolve_qc_level(control["control_name"], control["level"])
         if conflict:
             self._logger.warning(
-                f'QC {code} kontrol "{control["control_name"]}": level dari nama = '
+                f'{tag} QC {code} kontrol "{control["control_name"]}": level dari nama = '
                 f'{level}, dari alat = {control["level"]} — pakai {level}; '
                 f"periksa setting level kontrol di alat"
             )
@@ -172,6 +190,19 @@ class MindrayBS240ProModule(_bs200e.MindrayBS200EModule):
                 },
             },
         }
+
+    def should_store_result(self, result_dict: dict, raw_bytes: bytes) -> bool:
+        """
+        Hanya ORU^R01 yang layak masuk tbl_result.
+
+        Pesan lain yang nyasar ke ResultReceiver (ACK^Q03, ACK tak terduga)
+        tidak boleh menjadi baris tbl_result kosong.
+        """
+        message_type = self._parser.get_message_type(raw_bytes)
+        if message_type == EVENT_ORU_R01:
+            return True
+        self._logger.info(f"Pesan {message_type or '(tak dikenal)'} tidak disimpan")
+        return False
 
     def split_results(self, result_dict: dict) -> list:
         """

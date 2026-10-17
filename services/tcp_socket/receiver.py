@@ -520,7 +520,28 @@ class ResultReceiver:
             # dalam satu pesan, sedangkan /qc-results menerima satu lot+level
             # per baris. Default: satu pesan = satu baris.
             split = getattr(self._protocol, "split_results", None)
-            rows = split(result_dict) if split is not None else [result_dict]
+            rows = [result_dict]
+            if split is not None:
+                # Hook gagal/kosong tidak boleh membuat data hilang (alat tetap
+                # di-ACK dan tidak akan kirim ulang) — jatuh ke satu baris,
+                # tanpa kunci internal `_qc_controls`.
+                try:
+                    rows = split(result_dict)
+                except Exception as e:
+                    rows = []
+                    self._logger.warning(
+                        f"[{self._inst_name}] split_results gagal: {e} — "
+                        f"simpan sebagai satu baris"
+                    )
+                else:
+                    if not rows:
+                        self._logger.warning(
+                            f"[{self._inst_name}] split_results kosong — "
+                            f"simpan sebagai satu baris"
+                        )
+                if not rows:
+                    rows = [{k: v for k, v in result_dict.items()
+                             if k != "_qc_controls"}]
 
             raw_hex = raw_bytes.hex()
             loop = asyncio.get_event_loop()

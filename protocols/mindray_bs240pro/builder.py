@@ -1,7 +1,10 @@
 """
 protocols/mindray_bs240pro/builder.py — Builder HL7 Mindray BS-240Pro / BS-360E / BS-240E
 
-Turunan MindrayBuilder (BS-200E). Yang berbeda: model default di MSH-6/QRF-1.
+Turunan MindrayBuilder (BS-200E). Yang berbeda:
+- model default (BS-240Pro) di MSH-6/QRF-1
+- MSH-15 diisi dari context `accept_ack_type` (broadcast DSR^Q03: "P")
+- DSP-26 (jenis sampel) huruf awal kapital
 """
 
 from protocols.mindray_bs200e.builder import MindrayBuilder

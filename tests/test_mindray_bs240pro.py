@@ -170,6 +170,7 @@ def test_parse_qc_tunggal(module, caplog):
     assert parsed["parse_errors"] == []
     assert len(parsed["_qc_controls"]) == 1
     assert any("level dari nama = 1, dari alat = M" in r.message for r in caplog.records)
+    assert any("instrument 9" in r.message for r in caplog.records)
 
 
 def test_parse_qc_multi_kontrol_qc_utama_kontrol_pertama(module):
@@ -205,6 +206,17 @@ def test_split_results_qc_tunggal_dan_pasien_satu_baris(module):
 
     pasien = module.parse(ORU_SAMPLE, INSTRUMENT)
     assert module.split_results(pasien) == [pasien]
+
+
+def test_lot_dan_level_kembar_dicatat_parse_errors(module, caplog):
+    raw = (ORU_QC_MULTI.replace(b"1111^2222", b"1111^1111")
+           .replace(b"L^M", b"M^M"))
+    with caplog.at_level(logging.WARNING):
+        parsed = module.parse(raw, INSTRUMENT)
+    assert any("kembar" in e and "1111" in e and "M" in e
+               for e in parsed["parse_errors"])
+    assert any("kembar" in r.message for r in caplog.records)
+    assert len(module.split_results(parsed)) == 2
 
 
 def test_obr11_tidak_cocok_dicatat_parse_errors(module):
@@ -302,6 +314,14 @@ ACK_Q03_AA = (
 )
 
 
+def test_should_store_result_hanya_oru(module):
+    assert module.should_store_result(module.parse(ORU_SAMPLE, INSTRUMENT), ORU_SAMPLE)
+    assert module.should_store_result(module.parse(ORU_QC, INSTRUMENT), ORU_QC)
+    assert not module.should_store_result(
+        module.parse(ACK_Q03_AA, INSTRUMENT), ACK_Q03_AA
+    )
+
+
 def test_handle_ack_q03(module):
     assert module.handle_ack(ACK_Q03_AA) == "ACK"
     assert module.handle_ack(ACK_Q03_AA.replace(b"MSA|AA|", b"MSA|AE|")) == "NAK"
@@ -379,6 +399,58 @@ async def test_receiver_satu_baris_gagal_tidak_menghentikan_lainnya(
     await receiver.handle_data(ORU_QC_MULTI, _FakeWriter())
 
     assert calls == ["1111", "2222"]
+
+
+async def test_receiver_split_gagal_fallback_satu_baris(
+    monkeypatch, module, _bersihkan_logger_receiver
+):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda i, p, raw, d: saved.append(d) or len(saved),
+    )
+
+    def _boom(result_dict):
+        raise RuntimeError("split rusak")
+
+    monkeypatch.setattr(module, "split_results", _boom)
+    receiver = ResultReceiver(_FakeConfig(), module)
+    writer = _FakeWriter()
+    await receiver.handle_data(ORU_QC_MULTI, writer)
+
+    assert len(saved) == 1
+    assert "_qc_controls" not in saved[0]
+    assert writer.written.count(b"ACK^R01") == 1
+
+
+async def test_receiver_split_kosong_fallback_satu_baris(
+    monkeypatch, module, _bersihkan_logger_receiver
+):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda i, p, raw, d: saved.append(d) or len(saved),
+    )
+    monkeypatch.setattr(module, "split_results", lambda d: [])
+    receiver = ResultReceiver(_FakeConfig(), module)
+    await receiver.handle_data(ORU_QC_MULTI, _FakeWriter())
+
+    assert len(saved) == 1
+    assert "_qc_controls" not in saved[0]
+
+
+async def test_receiver_ack_q03_nyasar_tidak_disimpan(
+    monkeypatch, module, _bersihkan_logger_receiver
+):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda *a: saved.append(a) or 1,
+    )
+    receiver = ResultReceiver(_FakeConfig(), module)
+    await receiver.handle_data(ACK_Q03_AA, _FakeWriter())
+
+    assert saved == []
 
 
 async def test_receiver_tanpa_hook_tetap_satu_baris(
