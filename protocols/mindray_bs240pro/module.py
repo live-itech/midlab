@@ -28,6 +28,7 @@ from protocols.mindray_bs240pro.builder import BS240ProBuilder
 from protocols.mindray_bs240pro.constants import (
     PROTOCOL_NAME, PROTOCOL_VERSION, SEG_OBR,
     QC_LEVEL_FROM_NAME, INSTRUMENT_LEVEL_TO_NUMBER, QC_CONTROLS_KEY,
+    MSH15_LIS_DOWNLOAD,
 )
 from protocols.mindray_bs240pro.parser import BS240ProParser
 
@@ -196,3 +197,16 @@ class MindrayBS240ProModule(_bs200e.MindrayBS200EModule):
             row["qc"] = copy.deepcopy(entry["qc"])
             rows.append(row)
         return rows
+
+    def format_order(self, order: dict, instrument: dict) -> bytes:
+        """
+        DSR^Q03 untuk broadcast (MidLab mendorong order tanpa QRY dari alat).
+
+        Resmi di manual BS-240Pro: MSH-15 = P menandai info sampel yang
+        dikirim LIS atas inisiatif sendiri. Alat membalas ACK^Q03.
+        """
+        self._logger.info(
+            f"Broadcast DSR^Q03 order {order.get('order_id', '?')} / barcode "
+            f"{(order.get('specimen') or {}).get('sample_id', '?')}"
+        )
+        return self._builder.build_dsr_q03(order, {"accept_ack_type": MSH15_LIS_DOWNLOAD})

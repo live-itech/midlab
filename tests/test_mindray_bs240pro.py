@@ -203,3 +203,96 @@ def test_obr11_tidak_cocok_dicatat_parse_errors(module):
     parsed = module.parse(raw, INSTRUMENT)
     assert any("OBR-11" in e for e in parsed["parse_errors"])
     assert len(module.split_results(parsed)) == 2
+
+
+# ============================================================
+# Query (QRY^Q02 → QCK^Q02 + DSR^Q03) dan broadcast (DSR^Q03, MSH-15 = P)
+# ============================================================
+
+# QRY^Q02 dari log (barcode 241000223710; MSH-3/4 dan QRF-1 kosong)
+QRY = (
+    b"\x0b"
+    b"MSH|^~\\&|||||20241007065739||QRY^Q02|1167|P|2.3.1||||||ASCII|||\r"
+    b"QRD|20241007065739|R|D|313|||RD|241000223710|OTH|||T|\r"
+    b"QRF||||||RCT|COR|ALL||\r"
+    b"\x1c\x0d"
+)
+
+ORDER = {
+    "order_id": "ORD-240",
+    "request_datetime": "2024-10-07T07:08:13",
+    "patient": {"patient_id": "RM-0001", "name": "PASIEN QUERY", "dob": "19840515", "gender": "M"},
+    "specimen": {"sample_id": "241000223710", "sample_type": "serum", "priority": "R"},
+    "tests": [{"test_code": "CREA", "test_name": "Creatinine"}, {"test_code": "UREA", "test_name": "Urea"}],
+}
+
+
+def _msh_fields(payload: bytes, event: bytes) -> list:
+    """Field segmen MSH dari pesan `event` di dalam payload (bisa >1 pesan)."""
+    for message in payload.split(b"\x0b"):
+        if event in message:
+            msh = message.split(b"\r")[0].decode()
+            return msh.split("|")
+    raise AssertionError(f"{event!r} tidak ada di payload")
+
+
+def test_query_ok_qck_lalu_dsr(module):
+    info = module.handle_enq(QRY, INSTRUMENT)
+    assert info["type"] == "query"
+    assert info["sample_id"] == "241000223710"
+
+    resp = module.format_query_response_full(ORDER, INSTRUMENT, info["_msh"])
+    assert resp.index(b"QCK^Q02") < resp.index(b"DSR^Q03")
+    assert b"QAK|SR|OK|" in resp
+    assert b"DSP|3||PASIEN QUERY|||" in resp
+    assert b"DSP|21||241000223710|||" in resp
+    assert b"DSP|26||Serum|||" in resp            # kapital, seperti di log
+    assert b"DSP|29||CREA^Creatinine^^|||" in resp
+    assert b"DSP|30||UREA^Urea^^|||" in resp
+    assert b"QRD|20241007065739|R|D|313|||RD|241000223710|OTH|||T|" in resp   # QRD dipantulkan
+    dsr_msh = _msh_fields(resp, b"DSR^Q03")
+    assert dsr_msh[5] == "BS-240Pro"              # MSH-6
+    assert dsr_msh[14] == ""                      # MSH-15 kosong untuk balasan query
+
+
+def test_query_not_found(module):
+    context = module.handle_enq(QRY, INSTRUMENT)["_msh"]
+    resp = module.format_query_not_found_full(INSTRUMENT, context)
+    assert b"QAK|SR|NF|" in resp
+    assert b"DSR^Q03" not in resp
+
+
+@pytest.mark.parametrize("sample_type, expected", [
+    ("plasma", b"DSP|26||Plasma|||"),
+    ("URINE", b"DSP|26||Urine|||"),
+    ("Whole Blood", b"DSP|26||Whole Blood|||"),   # di luar tabel → apa adanya
+    ("", b"DSP|26|||||"),
+])
+def test_dsp26_jenis_sampel(module, sample_type, expected):
+    order = dict(ORDER, specimen=dict(ORDER["specimen"], sample_type=sample_type))
+    assert expected in module.format_query_response(order, INSTRUMENT)
+
+
+def test_broadcast_dsr_msh15_p_tanpa_warning(module, caplog):
+    with caplog.at_level(logging.WARNING):
+        payload = module.format_order(ORDER, INSTRUMENT)
+
+    assert b"QCK^Q02" not in payload
+    msh = _msh_fields(payload, b"DSR^Q03")
+    assert msh[14] == "P"                 # MSH-15 = P (manual: LIS kirim info sampel)
+    assert msh[5] == "BS-240Pro"
+    assert b"|RD|241000223710|OTH|" in payload     # QRD-8 = barcode
+    assert b"QRF|BS-240Pro|" in payload
+    assert b"DSP|21||241000223710|||" in payload
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+ACK_Q03_AA = (
+    b"\x0bMSH|^~\\&|||||20241007070813||ACK^Q03|1|P|2.3.1||||||ASCII|||\r"
+    b"MSA|AA|1|Message accepted|||0|\r\x1c\x0d"
+)
+
+
+def test_handle_ack_q03(module):
+    assert module.handle_ack(ACK_Q03_AA) == "ACK"
+    assert module.handle_ack(ACK_Q03_AA.replace(b"MSA|AA|", b"MSA|AE|")) == "NAK"
