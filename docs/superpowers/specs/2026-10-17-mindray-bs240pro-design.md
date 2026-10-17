@@ -1,11 +1,11 @@
-# Driver HL7_MINDRAY_BS240PRO — Design
+# Driver HL7_MINDRAY_BS240PRO_360E_240E — Design
 
 Tanggal: 2026-10-17
 Status: disetujui, siap implementasi
 
 ## Ringkasan
 
-Driver protocol baru `HL7_MINDRAY_BS240PRO` untuk chemistry analyzer Mindray
+Driver protocol baru `HL7_MINDRAY_BS240PRO_360E_240E` untuk chemistry analyzer Mindray
 BS-240Pro (berlaku juga untuk BS-240E dan BS-360E — satu manual yang sama).
 
 Lingkup:
@@ -60,7 +60,7 @@ QRY/QCK/DSR, group download, dan ACK dipakai ulang.
 
 | File | Isi |
 |---|---|
-| `constants.py` | Re-export konstanta BS-200E + `PROTOCOL_NAME = "HL7_MINDRAY_BS240PRO"`, `DEFAULT_MODEL = "BS-240Pro"`, `MSH15_LIS_DOWNLOAD = "P"`, posisi field QC, pola level |
+| `constants.py` | Re-export konstanta BS-200E + `PROTOCOL_NAME = "HL7_MINDRAY_BS240PRO_360E_240E"`, `DEFAULT_MODEL = "BS-240Pro"`, `MSH15_LIS_DOWNLOAD = "P"`, posisi field QC, pola level |
 | `parser.py` | `BS240ProParser(MindrayParser)` — override `parse_obr_qc` (multi-kontrol) |
 | `builder.py` | `BS240ProBuilder(MindrayBuilder)` — MSH-15 `P` untuk broadcast, DSP-26 kapital, model default |
 | `module.py` | `MindrayBS240ProModule` — override rakitan QC, `format_order`, tambah `split_results` |
@@ -80,7 +80,7 @@ class MindrayBS240ProModule(_bs200e.MindrayBS200EModule): ...
 ```
 
 Hal yang sama berlaku untuk parser/builder bila nanti ada loader serupa. Test
-memastikan `load_module("HL7_MINDRAY_BS240PRO")` mengembalikan
+memastikan `load_module("HL7_MINDRAY_BS240PRO_360E_240E")` mengembalikan
 `MindrayBS240ProModule`.
 
 ### Pendaftaran
@@ -88,10 +88,12 @@ memastikan `load_module("HL7_MINDRAY_BS240PRO")` mengembalikan
 `protocols/base.py`:
 
 ```python
-"HL7_MINDRAY_BS240PRO": "protocols.mindray_bs240pro.module",
+"HL7_MINDRAY_BS240PRO_360E_240E": "protocols.mindray_bs240pro.module",
 ```
 
-- Panjang nama 20 karakter, di bawah `protocol VARCHAR(50)` → **tanpa migrasi DB**.
+- Panjang nama 30 karakter, di bawah `protocol VARCHAR(50)` → **tanpa migrasi DB**.
+- Nama mewakili tiga seri (BS-240Pro, BS-360E, BS-240E); paket Python
+  `mindray_bs240pro`.
 - `is_mllp_protocol()` → `True` (prefiks `HL7`), framing MLLP otomatis.
 - `ResultPusher._normalize_protocol()` → keluarga `HL7` lewat prefiks.
 - Muncul otomatis di `/api/protocols` dan dropdown web console.
@@ -265,7 +267,7 @@ masuk git; struktur, kode tes, nilai QC, lot, dan timestamp dipertahankan.
    (level `1`, lot, run_at ISO8601, target mean/sd).
 8. Receiver: protocol dengan `split_results` → N baris tersimpan; tanpa
    hook → 1 baris (regresi).
-9. `load_module("HL7_MINDRAY_BS240PRO")` → `MindrayBS240ProModule`.
+9. `load_module("HL7_MINDRAY_BS240PRO_360E_240E")` → `MindrayBS240ProModule`.
 10. `qc_backfill` dengan pesan multi-kontrol → N payload.
 
 Simulator `scripts/mindray_bs240pro_test_sender.py` (pola
