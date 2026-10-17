@@ -7,13 +7,20 @@ nilai QC, lot, dan timestamp dibiarkan asli. Contoh QC multi-kontrol diambil
 dari manual "BS-360E & BS-240Pro & BS-240E LIS Interface Manual V1.0" bab 1.3.
 """
 
+import importlib.util
 import logging
+import pathlib
+import sys
+from datetime import datetime
+from unittest.mock import MagicMock
 
 import pytest
 
+from lib.db import TblResult
 from protocols.base import load_module, is_mllp_protocol, _PROTOCOL_REGISTRY
 from protocols.mindray_bs240pro.module import MindrayBS240ProModule, resolve_qc_level
 from protocols.mindray_bs200e.module import MindrayBS200EModule
+from services.lis_bridge.result_pusher import build_qc_payload
 from services.tcp_socket.receiver import ResultReceiver
 
 
@@ -393,3 +400,65 @@ async def test_receiver_tanpa_hook_tetap_satu_baris(
     await receiver.handle_data(ORU_SAMPLE, _FakeWriter())
 
     assert len(calls) == 1
+
+
+# ============================================================
+# qc_backfill: hook split_results dan payload /qc-results
+# ============================================================
+
+def _inst240():
+    m = MagicMock()
+    m.id = 9
+    m.name = "Mindray BS-240Pro"
+    m.lis_instrument_id = "INST-BS240PRO"
+    return m
+
+
+def _row(result_json):
+    row = TblResult()
+    row.id = 1
+    row.result_json = result_json
+    row.received_at = datetime(2024, 10, 7, 3, 25, 7)
+    return row
+
+
+def test_payload_qc_results_dari_baris_bs240pro(module):
+    row_json = module.split_results(module.parse(ORU_QC, INSTRUMENT))[0]
+    payload = build_qc_payload(_row(row_json), _inst240())
+
+    assert payload["protocol"] == "HL7"
+    assert payload["qc"]["lot_number"] == "059324003"
+    assert payload["qc"]["level"] == "1"
+    assert payload["qc"]["control_name"] == "CTRL L1"
+    assert payload["qc"]["expiry_date"] == "2026-12-31"
+    assert payload["run_at"].startswith("2024-10-07T03:12:12")
+    assert payload["message_id"] == "MID9-059324003-L1-20241007T031212"
+    assert payload["results"] == [{
+        "test_code": "DBIL",
+        "test_name": "D-Bil-V",
+        "value": "0.525642",
+        "unit": "mg/dL",
+        "flag": "",
+        "instrument_target_mean": 1.05,
+        "instrument_target_sd": 0.16,
+    }]
+
+
+def _load_qc_backfill(monkeypatch):
+    # Skrip menyisipkan /opt/midlab ke sys.path saat di-import; kembalikan
+    # sys.path setelah test agar import berikutnya tidak lari ke produksi.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    path = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "qc_backfill.py"
+    spec = importlib.util.spec_from_file_location("qc_backfill_under_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_qc_backfill_satu_payload_per_kontrol(monkeypatch, module):
+    backfill = _load_qc_backfill(monkeypatch)
+    monkeypatch.setattr(backfill, "raw_messages", lambda _id: iter([ORU_QC_MULTI, ORU_SAMPLE]))
+
+    payloads = backfill.collect_payloads(_inst240(), module, "2016")
+
+    assert sorted(p["qc"]["lot_number"] for p in payloads) == ["1111", "2222"]
