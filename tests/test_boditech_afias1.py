@@ -6,6 +6,8 @@ Driver best-effort: satu-satunya sumber adalah contoh pesan di slide 5
 contoh itu, dibungkus MLLP.
 """
 
+import logging
+
 import pytest
 
 from protocols.base import load_module, is_mllp_protocol, _PROTOCOL_REGISTRY
@@ -150,3 +152,63 @@ def test_pesan_tanpa_mllp_tetap_bisa_diparse(module):
     # Parser sendiri toleran; framing ditentukan receiver.
     raw = "".join(s + "\r" for s in SEGMENTS).encode()
     assert module.parse(raw, INSTRUMENT)["specimen"]["sample_id"] == "T45"
+
+
+# ============================================================
+# ACK^R24
+# ============================================================
+
+def test_ack_r24(module):
+    ack = module.build_ack_response(OUL, INSTRUMENT)
+
+    assert ack.startswith(b"\x0b") and ack.endswith(b"\x1c\x0d")
+    segs = ack[1:-2].decode().split("\r")
+    assert segs[0] == (
+        "MSH|^~\\&|MidLab||AFIAS-6|A60123456789|20260101120000||ACK^R24^ACK|1|T|2.6"
+    )
+    assert segs[1] == "MSA|AA|1"
+
+
+def test_ack_processing_id_default_p(module):
+    raw = OUL.replace(b"|OUL^R24^OUL_R24|1|T|2.6", b"|OUL^R24^OUL_R24|1||2.6")
+    msh = module.build_ack_response(raw, INSTRUMENT)[1:].decode().split("\r")[0]
+    assert msh.split("|")[10] == "P"
+
+
+def test_ack_pesan_tak_terbaca_kosong(module):
+    assert module.build_ack_response(b"\x0bPID||T45\r\x1c\x0d", INSTRUMENT) == b""
+
+
+# ============================================================
+# Filter penyimpanan & bidirectional
+# ============================================================
+
+def test_should_store_result_hanya_oul_r24(module):
+    assert module.should_store_result({}, OUL) is True
+    ack = mllp(["MSH|^~\\&|||||20200305||ACK^R24^ACK|1|P|2.6", "MSA|AA|1"])
+    assert module.should_store_result({}, ack) is False
+    assert module.should_store_result({}, b"sampah") is False
+
+
+def test_tidak_ada_query(module):
+    assert module.is_enq(OUL) is False
+    assert module.handle_enq(OUL, INSTRUMENT)["type"] == "unsupported"
+
+
+def test_order_dan_query_tidak_didukung(module, caplog):
+    with caplog.at_level(logging.WARNING):
+        assert module.format_order({"order_id": "X"}, INSTRUMENT) == b""
+        assert module.format_query_response({}, INSTRUMENT) == b""
+        assert module.format_query_not_found(INSTRUMENT) == b""
+    assert len([r for r in caplog.records if r.levelno == logging.WARNING]) == 3
+
+
+@pytest.mark.parametrize("code, expected", [("AA", "ACK"), ("AE", "NAK"), ("AR", "NAK"), ("XX", "UNKNOWN")])
+def test_handle_ack(module, code, expected):
+    raw = mllp(["MSH|^~\\&|||||20200305||ACK^R24^ACK|1|P|2.6", f"MSA|{code}|1"])
+    assert module.handle_ack(raw) == expected
+
+
+def test_handle_ack_tanpa_msa(module):
+    assert module.handle_ack(b"") == "UNKNOWN"
+    assert module.handle_ack(OUL) == "UNKNOWN"

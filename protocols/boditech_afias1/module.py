@@ -31,10 +31,12 @@ from lib.models import (
 from protocols.base import BaseProtocolModule
 from protocols.boditech_afias1.constants import (
     PROTOCOL_NAME, PROTOCOL_VERSION,
-    SEG_MSH, SEG_PID, SEG_OBR, SEG_OBX, SEG_ORC, SEG_SPM,
+    SEG_MSH, SEG_PID, SEG_OBR, SEG_OBX, SEG_ORC, SEG_SPM, SEG_MSA,
+    ACK_AA, ACK_AE, ACK_AR,
     EVENT_RESULT_PREFIX,
 )
-from protocols.boditech_afias1.parser import AfiasParser, to_iso8601
+from protocols.boditech_afias1.parser import AfiasParser, field, to_iso8601
+from protocols.boditech_afias1.builder import AfiasBuilder
 
 
 class BoditechAfias1Module(BaseProtocolModule):
@@ -50,7 +52,7 @@ class BoditechAfias1Module(BaseProtocolModule):
                  ACK — dipakai unit test.
         """
         self._parser = AfiasParser()
-        self._now = now
+        self._builder = AfiasBuilder(now=now)
         self._logger = get_logger("boditech_afias1")
 
     @property
@@ -157,10 +159,47 @@ class BoditechAfias1Module(BaseProtocolModule):
         result.comments.extend(f"{label}: {value}" for label, value in comments if value)
 
     # ============================================================
-    # Bidirectional — tidak didukung (diisi Task 2)
+    # Filter & ACK — dipanggil ResultReceiver
+    # ============================================================
+
+    def should_store_result(self, result_dict: dict, raw_bytes: bytes) -> bool:
+        """Hanya OUL^R24 yang layak masuk tbl_result."""
+        message_type = self._parser.get_message_type(raw_bytes)
+        if message_type.startswith(EVENT_RESULT_PREFIX):
+            return True
+        self._logger.info(f"Pesan {message_type or '(tak dikenal)'} tidak disimpan")
+        return False
+
+    def build_ack_response(self, raw_message: bytes, instrument: dict) -> bytes:
+        """
+        ACK^R24^ACK atas pesan alat. Dokumen tidak menyebut apakah alat
+        menunggu ACK; bila tidak, balasan ini tidak berbahaya.
+        """
+        try:
+            segments = self._parser.split_message(self._parser.unwrap_mllp(raw_message))
+            msh_fields = self._parser.find_segment(segments, SEG_MSH)
+        except Exception as e:
+            self._logger.error(f"Gagal baca pesan untuk ACK: {e}")
+            return b""
+
+        if msh_fields is None:
+            self._logger.error("Pesan tanpa MSH — ACK tidak dikirim")
+            return b""
+
+        context = self._parser.parse_msh(msh_fields)
+        if not context.get("control_id"):
+            self._logger.warning("MSH-10 kosong — ACK dikirim tanpa control ID")
+        return self._builder.build_ack_r24(context)
+
+    # ============================================================
+    # Bidirectional — tidak didukung alat ini
     # ============================================================
 
     def format_order(self, order: dict, instrument: dict) -> bytes:
+        self._logger.warning(
+            f"AFIAS-1 tidak menerima order dari LIS — order "
+            f"{(order or {}).get('order_id', '?')} tidak dikirim"
+        )
         return b""
 
     def is_enq(self, raw_bytes: bytes) -> bool:
@@ -171,10 +210,31 @@ class BoditechAfias1Module(BaseProtocolModule):
                 "raw_query": (raw_bytes or b"").hex()}
 
     def format_query_response(self, order: dict, instrument: dict) -> bytes:
+        self._logger.warning("AFIAS-1 tidak mengirim query — tidak ada response")
         return b""
 
     def format_query_not_found(self, instrument: dict) -> bytes:
+        self._logger.warning("AFIAS-1 tidak mengirim query — tidak ada response")
         return b""
 
     def handle_ack(self, raw_bytes: bytes) -> str:
+        """Baca MSA-1: AA → ACK, AE/AR → NAK, selain itu UNKNOWN."""
+        if not raw_bytes:
+            return "UNKNOWN"
+        try:
+            segments = self._parser.split_message(self._parser.unwrap_mllp(raw_bytes))
+        except Exception as e:
+            self._logger.warning(f"Gagal decode ACK: {e}")
+            return "UNKNOWN"
+
+        msa_fields = self._parser.find_segment(segments, SEG_MSA)
+        if msa_fields is None:
+            return "UNKNOWN"
+
+        code = field(msa_fields, 1).upper()
+        if code == ACK_AA:
+            return "ACK"
+        if code in (ACK_AE, ACK_AR):
+            self._logger.warning(f"Alat membalas {code}")
+            return "NAK"
         return "UNKNOWN"
