@@ -12,6 +12,9 @@ Lingkup:
 
 - **Unidirectional** — terima `OUL^R24^OUL_R24` (hasil), balas `ACK^R24^ACK`.
 - Framing **MLLP** lewat jalur HL7 yang sudah ada di TCPSocketService.
+- Koneksi **server maupun client** — `tbl_instrument.connection` diatur
+  TCPSocketService; driver tidak bergantung arah koneksi. Dibuktikan dengan
+  test end-to-end socket sungguhan untuk kedua mode.
 - Receiver memberi **WARNING** bila data HL7 datang tanpa `<VT>` (sebelumnya
   dibuang diam-diam) — agar framing alat langsung terlihat saat pemasangan.
 
@@ -38,6 +41,10 @@ Fakta lain dari dokumen:
 - Mode HL7 tersedia lewat kabel USB-OTG (RS232) atau LAN.
 - Mode Network: alat diisi **Server IP + Port** → alat yang konek, MidLab
   menjadi server (`tbl_instrument.connection = 'server'`).
+- Mode RS232 lewat converter RS232-to-LAN: converter umumnya bisa diset
+  sebagai TCP server, sehingga MidLab yang konek
+  (`tbl_instrument.connection = 'client'`). Ditambahkan atas permintaan user
+  (17 Okt 2026): driver harus jalan di kedua mode.
 - Alat hanya mengirim data ke LIS ("analyzer sends data to LIS server").
 
 ### Yang TIDAK dispesifikasi dokumen
@@ -149,6 +156,17 @@ Tidak didukung. `ACK_EXPECTED_ON_NOT_FOUND = False`; `is_enq` → False;
 - Perilaku framing tidak berubah; berlaku untuk semua driver HL7. Byte
   mentah tetap tercatat di comm log seperti biasa.
 
+## Koneksi server & client
+
+Driver tidak memuat kode arah koneksi; `TCPSocketService._run_server_mode()`
+dan `_run_client_mode()` sama-sama meneruskan data ke `ResultReceiver` yang
+sama. Yang wajib dijamin: tidak ada deklarasi transport di driver yang
+mengunci satu arah (`PING_BEFORE_RECONNECT`, `IDLE_RX_TIMEOUT` tidak
+dideklarasikan), dan test end-to-end membuktikan alur OUL → simpan → ACK di
+kedua mode dengan socket localhost sungguhan. Docstring module menyebut
+kedua mode. Simulator mendukung `--mode connect` (MidLab server) dan
+`--mode listen` (MidLab client).
+
 ## Testing
 
 `tests/test_boditech_afias1.py`, TDD. Fixture utama: contoh slide 5,
@@ -163,10 +181,11 @@ dibungkus MLLP.
 7. WARNING non-MLLP: HL7 polos → WARNING berisi cuplikan, tidak tersimpan; pesan MLLP normal tanpa WARNING.
 8. `build_mid_payload` ResultPusher dari hasil parse → `protocol == "HL7"`, `specimen.collected_at` ISO, satu hasil `T4`.
 9. `is_enq` False untuk pesan apa pun.
+10. End-to-end TCPSocketService, socket localhost sungguhan: `connection='server'` (test berperan alat yang konek) dan `connection='client'` (test berperan alat/converter yang listen) — keduanya: OUL tersimpan sekali, alat menerima `ACK^R24^ACK`, service berhenti bersih.
 
 Simulator `scripts/boditech_afias1_test_sender.py`: kirim contoh slide 5 ke
-MidLab (alat = client), tampilkan ACK; `--raw` mengirim tanpa MLLP untuk
-mencoba WARNING.
+MidLab dan tampilkan ACK; `--mode connect|listen` untuk MidLab server/client;
+`--raw` mengirim tanpa MLLP untuk mencoba WARNING.
 
 ## Risiko diketahui
 

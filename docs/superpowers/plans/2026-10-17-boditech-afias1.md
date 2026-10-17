@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Driver protocol best-effort untuk Boditech AFIAS-1 (HL7 2.6 `OUL^R24`, unidirectional) plus WARNING di receiver bila data HL7 datang tanpa MLLP.
+**Goal:** Driver protocol best-effort untuk Boditech AFIAS-1 (HL7 2.6 `OUL^R24`, unidirectional), jalan dengan connection server maupun client, plus WARNING di receiver bila data HL7 datang tanpa MLLP.
 
 **Architecture:** Paket mandiri `protocols/boditech_afias1/` (constants, parser, builder, module) mengikuti pola driver SD Biosensor F2400, didaftarkan di `protocols/base.py`. `services/tcp_socket/receiver.py::_extract_mllp_message` menulis WARNING untuk byte yang dibuang. Simulator di `scripts/`.
 
@@ -33,7 +33,7 @@
 | `protocols/boditech_afias1/module.py` | Create | `BoditechAfias1Module` |
 | `protocols/base.py` | Modify (`_PROTOCOL_REGISTRY`) | daftarkan nama |
 | `services/tcp_socket/receiver.py` | Modify (`_extract_mllp_message`) | WARNING byte non-MLLP |
-| `scripts/boditech_afias1_test_sender.py` | Create | simulator alat |
+| `scripts/boditech_afias1_test_sender.py` | Create | simulator alat (`--mode connect|listen`) |
 | `tests/test_boditech_afias1.py` | Create | seluruh test |
 
 ---
@@ -1204,16 +1204,157 @@ Co-Authored-By: <model yang mengerjakan> <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Simulator dan verifikasi akhir
+### Task 4: Koneksi server & klien (end-to-end), simulator, dan verifikasi akhir
+
+Syarat tambahan dari user (17 Okt 2026): driver harus jalan dengan `tbl_instrument.connection` = `server` maupun `client`. Arah koneksi diurus TCPSocketService; task ini **membuktikannya** dengan socket localhost sungguhan dan menyesuaikan docstring + simulator.
 
 **Files:**
+- Modify: `protocols/boditech_afias1/module.py` (docstring modul saja)
 - Create: `scripts/boditech_afias1_test_sender.py`
+- Test: `tests/test_boditech_afias1.py`
 
 **Interfaces:**
-- Consumes: TCPSocketService yang berjalan untuk alat ber-protocol `HL7_BODITECH_AFIAS-1` (`connection='server'`)
-- Produces: CLI `--host`, `--port`, `--sample-id`, `--raw`
+- Consumes: `BoditechAfias1Module` lengkap; `services.tcp_socket.config.InstrumentConfig(id, name, ip_address, port, protocol, mode, bidir_mode, broadcast_interval, connection, is_active)`; `services.tcp_socket.service.TCPSocketService(config)` dengan `_run_server_mode()`, `_run_client_mode()`, `stop()`, atribut `_running`; `services.tcp_socket.service.enqueue_lis_event` (DB — di-monkeypatch); fixture `receiver_logger_bersih` dan konstanta `OUL`, `PROTOCOL` dari Task 1/3
+- Produces: CLI simulator `--mode connect|listen`, `--host`, `--port`, `--sample-id`, `--raw`
 
-- [ ] **Step 1: Tulis simulator**
+- [ ] **Step 1: Tulis test end-to-end**
+
+Tambahkan ke `tests/test_boditech_afias1.py` (import di blok atas: `import asyncio`, `import socket as socketlib`, `from services.tcp_socket.config import InstrumentConfig`, `from services.tcp_socket.service import TCPSocketService`):
+
+```python
+# ============================================================
+# End-to-end TCPSocketService — connection server & client
+#
+# Socket localhost sungguhan. start() tidak dipanggil karena memasang
+# signal handler SIGTERM/SIGINT pada proses pytest; _run_*_mode() dipanggil
+# langsung dengan _running = True, lalu stop().
+# ============================================================
+
+def _port_bebas() -> int:
+    with socketlib.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _config(connection: str, port: int) -> InstrumentConfig:
+    return InstrumentConfig(
+        id=12, name="Boditech AFIAS-1", ip_address="127.0.0.1", port=port,
+        protocol=PROTOCOL, mode="unidirectional", bidir_mode=None,
+        broadcast_interval=30, connection=connection, is_active=True,
+    )
+
+
+async def _baca_satu_pesan(reader) -> bytes:
+    data = b""
+    while b"\x1c\x0d" not in data:
+        chunk = await reader.read(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+@pytest.fixture
+def e2e_tersimpan(monkeypatch, receiver_logger_bersih):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda inst_id, proto, raw_hex, result: saved.append(result) or len(saved),
+    )
+    # Status koneksi ditulis ke tbl_lis_event_queue — jangan sentuh DB.
+    monkeypatch.setattr("services.tcp_socket.service.enqueue_lis_event", lambda **k: None)
+    return saved
+
+
+async def test_e2e_connection_server_alat_yang_konek(e2e_tersimpan):
+    port = _port_bebas()
+    svc = TCPSocketService(_config("server", port))
+    svc._running = True
+    task = asyncio.create_task(svc._run_server_mode())
+    try:
+        for _ in range(100):
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                break
+            except OSError:
+                await asyncio.sleep(0.05)
+        else:
+            pytest.fail("TCPSocketService tidak listen")
+
+        writer.write(OUL)
+        await writer.drain()
+        ack = await asyncio.wait_for(_baca_satu_pesan(reader), 5)
+        writer.close()
+    finally:
+        await svc.stop()
+        await asyncio.wait_for(task, 5)
+
+    assert b"ACK^R24^ACK" in ack and b"MSA|AA|1" in ack
+    assert [r["specimen"]["sample_id"] for r in e2e_tersimpan] == ["T45"]
+
+
+async def test_e2e_connection_client_midlab_yang_konek(e2e_tersimpan):
+    # Test berperan sebagai alat / converter RS232-to-LAN yang listen.
+    ack_diterima = asyncio.get_running_loop().create_future()
+
+    async def alat(reader, writer):
+        writer.write(OUL)
+        await writer.drain()
+        ack_diterima.set_result(await _baca_satu_pesan(reader))
+
+    server = await asyncio.start_server(alat, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    svc = TCPSocketService(_config("client", port))
+    svc._running = True
+    task = asyncio.create_task(svc._run_client_mode())
+    try:
+        ack = await asyncio.wait_for(ack_diterima, 5)
+    finally:
+        await svc.stop()
+        await asyncio.wait_for(task, 10)
+        server.close()
+        await server.wait_closed()
+
+    assert b"ACK^R24^ACK" in ack and b"MSA|AA|1" in ack
+    assert [r["specimen"]["sample_id"] for r in e2e_tersimpan] == ["T45"]
+
+
+def test_driver_tidak_mengunci_arah_koneksi(module):
+    # Deklarasi transport ini mengubah perilaku koneksi TCPSocketService;
+    # AFIAS-1 tidak memerlukannya di mode mana pun.
+    assert not getattr(module, "PING_BEFORE_RECONNECT", False)
+    assert not getattr(module, "IDLE_RX_TIMEOUT", 0)
+```
+
+- [ ] **Step 2: Jalankan test**
+
+Run: `.venv/bin/python -m pytest tests/test_boditech_afias1.py -v -k "e2e or arah"`
+Expected: PASS (fitur ini sudah didukung TCPSocketService; test mengunci buktinya). Bila sebuah test menggantung atau gagal, **jangan ubah `services/tcp_socket/service.py`** — laporkan BLOCKED dengan traceback dan baris service yang terlibat; kemungkinan besar masalah di test (mis. fixture, urutan stop), bukan di driver.
+
+- [ ] **Step 3: Perbarui docstring module**
+
+Di `protocols/boditech_afias1/module.py`, ganti paragraf:
+
+```
+Mode Network: alat diisi Server IP + Port, jadi alat yang konek —
+tbl_instrument.connection harus 'server'.
+```
+
+dengan:
+
+```
+## Koneksi
+
+Driver tidak bergantung arah koneksi — keduanya didukung:
+
+- connection='server' — mode Network alat: alat diisi Server IP + Port dan
+  alat yang konek ke MidLab
+- connection='client' — mis. lewat converter RS232-to-LAN yang diset sebagai
+  TCP server: MidLab yang konek ke IP:port converter
+```
+
+- [ ] **Step 4: Tulis simulator**
 
 `scripts/boditech_afias1_test_sender.py`:
 
@@ -1222,9 +1363,15 @@ Co-Authored-By: <model yang mengerjakan> <noreply@anthropic.com>"
 """
 scripts/boditech_afias1_test_sender.py — Simulator alat Boditech AFIAS-1.
 
-Seperti alat di mode LIS "HL7 / Network": konek ke Server IP:Port (MidLab
-connection='server'), kirim satu OUL^R24 persis contoh slide 5 manual LIS
-AFIAS-1 (ID sampel bisa diganti), lalu tampilkan balasan MidLab.
+Kirim satu OUL^R24 persis contoh slide 5 manual LIS AFIAS-1 (ID sampel bisa
+diganti) lalu tampilkan balasan MidLab. Dua mode koneksi, sesuai
+tbl_instrument.connection di MidLab:
+
+  --mode connect  MidLab = server (connection='server'): simulator konek ke
+                  MidLab, seperti alat di mode LIS Network
+  --mode listen   MidLab = client (connection='client'): simulator membuka
+                  port dan menunggu MidLab konek, seperti converter
+                  RS232-to-LAN yang diset TCP server
 
   --raw   kirim tanpa envelope MLLP — MidLab harus menulis WARNING
           "Data HL7 tanpa MLLP <VT> dibuang" di tcp_<id>.log dan tidak
@@ -1232,6 +1379,7 @@ AFIAS-1 (ID sampel bisa diganti), lalu tampilkan balasan MidLab.
 
 Run:
   python3 scripts/boditech_afias1_test_sender.py --port 5200
+  python3 scripts/boditech_afias1_test_sender.py --mode listen --host 0.0.0.0 --port 5200
   python3 scripts/boditech_afias1_test_sender.py --port 5200 --sample-id BC-001
   python3 scripts/boditech_afias1_test_sender.py --port 5200 --raw
 """
@@ -1269,9 +1417,30 @@ def show(label: str, raw: bytes):
             print(f"  {line}")
 
 
+def open_socket(args) -> socket.socket:
+    if args.mode == "connect":
+        print(f"==> Connect ke MidLab {args.host}:{args.port} sebagai AFIAS-1")
+        return socket.create_connection((args.host, args.port), timeout=10)
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((args.host, args.port))
+    server.listen(1)
+    server.settimeout(60)
+    print(f"==> Listen di {args.host}:{args.port}, menunggu MidLab konek (60s)...")
+    try:
+        conn, addr = server.accept()
+    finally:
+        server.close()
+    print(f"==> MidLab konek dari {addr}")
+    return conn
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Simulator alat Boditech AFIAS-1")
-    ap.add_argument("--host", default=DEFAULT_HOST)
+    ap.add_argument("--mode", choices=["connect", "listen"], default="connect")
+    ap.add_argument("--host", default=DEFAULT_HOST,
+                    help="connect: alamat MidLab; listen: alamat bind (0.0.0.0 untuk semua)")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--sample-id", default=DEFAULT_SAMPLE_ID)
     ap.add_argument("--raw", action="store_true", help="kirim tanpa envelope MLLP")
@@ -1280,12 +1449,11 @@ def main() -> int:
     body = build_oul(args.sample_id).encode("ascii")
     msg = body if args.raw else VT + body + FS + CR
 
-    print(f"==> Connect ke MidLab {args.host}:{args.port} sebagai AFIAS-1")
     try:
-        sock = socket.create_connection((args.host, args.port), timeout=10)
+        sock = open_socket(args)
     except OSError as e:
-        print(f"ERROR: gagal connect: {e}", file=sys.stderr)
-        print("Pastikan service tcp_<id> jalan, connection='server', port sesuai.",
+        print(f"ERROR: {e}", file=sys.stderr)
+        print("Pastikan service tcp_<id> jalan dan port/connection sesuai tbl_instrument.",
               file=sys.stderr)
         return 1
 
@@ -1293,10 +1461,15 @@ def main() -> int:
         show("TX OUL^R24" + (" (tanpa MLLP)" if args.raw else ""), msg)
         sock.sendall(msg)
         sock.settimeout(10)
+        data = b""
         try:
-            data = sock.recv(65535)
+            while FS + CR not in data:
+                chunk = sock.recv(65535)
+                if not chunk:
+                    break
+                data += chunk
         except socket.timeout:
-            data = b""
+            pass
     finally:
         sock.close()
 
@@ -1319,22 +1492,25 @@ if __name__ == "__main__":
     sys.exit(main())
 ```
 
-- [ ] **Step 2: Cek skrip**
+- [ ] **Step 5: Cek skrip**
 
 Run: `.venv/bin/python scripts/boditech_afias1_test_sender.py --help` → teks bantuan, exit 0.
 Run: `.venv/bin/python -m py_compile scripts/boditech_afias1_test_sender.py` → tanpa output.
 Jangan jalankan simulator ke port/service mana pun.
 
-- [ ] **Step 3: Full suite**
+- [ ] **Step 6: Full suite**
 
 Run: `.venv/bin/python -m pytest -q 2>&1 | tail -8`
-Expected: hanya 4 kegagalan pre-existing `tests/test_tap_transport.py::TestSerialTransport`; passed = 709 + jumlah test baru.
+Expected: hanya 4 kegagalan pre-existing `tests/test_tap_transport.py::TestSerialTransport`; tidak ada kegagalan lain dan tidak ada test yang menggantung.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add scripts/boditech_afias1_test_sender.py
-git commit -m "feat(scripts): simulator alat Boditech AFIAS-1 (MLLP dan --raw)
+git add protocols/boditech_afias1/module.py scripts/boditech_afias1_test_sender.py tests/test_boditech_afias1.py
+git commit -m "feat(afias1): bukti end-to-end connection server & client + simulator
+
+Test socket localhost sungguhan untuk kedua arah koneksi TCPSocketService,
+docstring driver menyebut kedua mode, simulator --mode connect|listen.
 
 Co-Authored-By: <model yang mengerjakan> <noreply@anthropic.com>"
 ```
