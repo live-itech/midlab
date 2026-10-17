@@ -7,11 +7,16 @@ contoh itu, dibungkus MLLP.
 """
 
 import logging
+from datetime import datetime
+from unittest.mock import MagicMock
 
 import pytest
 
 from protocols.base import load_module, is_mllp_protocol, _PROTOCOL_REGISTRY
+from lib.db import TblResult
 from protocols.boditech_afias1.module import BoditechAfias1Module
+from services.lis_bridge.result_pusher import build_mid_payload
+from services.tcp_socket.receiver import ResultReceiver
 
 
 PROTOCOL = "HL7_BODITECH_AFIAS-1"
@@ -212,3 +217,135 @@ def test_handle_ack(module, code, expected):
 def test_handle_ack_tanpa_msa(module):
     assert module.handle_ack(b"") == "UNKNOWN"
     assert module.handle_ack(OUL) == "UNKNOWN"
+
+
+# ============================================================
+# Integrasi ResultReceiver
+# ============================================================
+
+class _FakeConfig:
+    id = 12
+    name = "Boditech AFIAS-1"
+    protocol = PROTOCOL
+
+    def to_dict(self):
+        return dict(INSTRUMENT)
+
+
+class _FakeWriter:
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data):
+        self.written += data
+
+    async def drain(self):
+        pass
+
+
+@pytest.fixture
+def receiver_logger_bersih():
+    # ResultReceiver meng-cache handler file di logger midlab.tcp_socket.12;
+    # buang setelah test agar tidak bocor ke test lain.
+    yield
+    lg = logging.getLogger("midlab.tcp_socket.12")
+    for h in list(lg.handlers):
+        h.close()
+        lg.removeHandler(h)
+
+
+async def test_receiver_pesan_terpotong_disimpan_dan_di_ack_sekali(
+    monkeypatch, module, receiver_logger_bersih
+):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda inst_id, proto, raw_hex, result: saved.append(result) or len(saved),
+    )
+    receiver = ResultReceiver(_FakeConfig(), module)
+    writer = _FakeWriter()
+
+    potong = len(OUL) // 2
+    assert await receiver.handle_data(OUL[:potong], writer) is False
+    assert saved == [] and writer.written == b""
+
+    await receiver.handle_data(OUL[potong:], writer)
+
+    assert len(saved) == 1
+    assert saved[0]["specimen"]["sample_id"] == "T45"
+    assert writer.written.count(b"ACK^R24^ACK") == 1
+
+
+async def test_receiver_hl7_polos_memicu_warning(
+    monkeypatch, module, caplog, receiver_logger_bersih
+):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda *a: saved.append(a) or 1,
+    )
+    receiver = ResultReceiver(_FakeConfig(), module)
+    raw = "".join(s + "\r" for s in SEGMENTS).encode()
+
+    with caplog.at_level(logging.WARNING):
+        await receiver.handle_data(raw, _FakeWriter())
+
+    assert saved == []
+    pesan = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("tanpa MLLP" in m and f"({len(raw)} byte)" in m and "MSH|" in m for m in pesan)
+
+
+async def test_receiver_sampah_sebelum_vt_memicu_warning_tapi_pesan_tetap_masuk(
+    monkeypatch, module, caplog, receiver_logger_bersih
+):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda *a: saved.append(a) or 1,
+    )
+    receiver = ResultReceiver(_FakeConfig(), module)
+
+    with caplog.at_level(logging.WARNING):
+        await receiver.handle_data(b"NOISE" + OUL, _FakeWriter())
+
+    assert len(saved) == 1
+    assert any("tanpa MLLP" in r.getMessage() and "NOISE" in r.getMessage()
+               for r in caplog.records if r.levelno == logging.WARNING)
+
+
+async def test_receiver_mllp_normal_tanpa_warning(
+    monkeypatch, module, caplog, receiver_logger_bersih
+):
+    monkeypatch.setattr("services.tcp_socket.receiver.save_result", lambda *a: 1)
+    receiver = ResultReceiver(_FakeConfig(), module)
+
+    with caplog.at_level(logging.WARNING):
+        # CR/LF sisa di antara pesan bukan data — tidak boleh memicu WARNING.
+        await receiver.handle_data(OUL + b"\r\n" + OUL, _FakeWriter())
+
+    assert not [r for r in caplog.records
+                if r.levelno >= logging.WARNING and "tanpa MLLP" in r.getMessage()]
+
+
+# ============================================================
+# Payload ke EazyLab (/results)
+# ============================================================
+
+def test_payload_results_dari_hasil_afias(module):
+    row = TblResult()
+    row.id = 1
+    row.result_json = module.parse(OUL, INSTRUMENT)
+    row.received_at = datetime(2020, 3, 5, 15, 15, 53)
+    inst = MagicMock()
+    inst.id = 12
+    inst.lis_instrument_id = "INST-AFIAS1"
+
+    payload = build_mid_payload(row, inst)
+
+    assert payload["protocol"] == "HL7"
+    assert payload["specimen"]["sample_id"] == "T45"
+    assert payload["specimen"]["collected_at"] == "2020-03-05T17:15:53.205+09:00"
+    assert payload["message_datetime"] == "2020-03-05T17:15:53.205+09:00"
+    assert [(r["test_code"], r["value"], r["status"]) for r in payload["results"]] == [
+        ("T4", "33.26", "final")
+    ]

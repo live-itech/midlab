@@ -312,24 +312,28 @@ class ResultReceiver:
         """
         Ekstrak satu MLLP message dari buffer.
 
-        Mencari pasangan <VT>...<FS><CR>
+        Mencari pasangan <VT>...<FS><CR>. Byte di luar envelope dibuang —
+        dengan WARNING, karena alat yang mengirim HL7 polos (tanpa MLLP)
+        hanya ketahuan dari sini.
         """
         # Cari MLLP_START
         try:
             start = self._buffer.index(MLLP_START)
         except ValueError:
-            # Tidak ada VT — clear buffer junk sebelumnya
+            # Tidak ada VT — buang isi buffer
+            self._warn_dropped(bytes(self._buffer))
             self._buffer.clear()
             return None
 
-        # Cari MLLP_END setelah start
+        if start > 0:
+            self._warn_dropped(bytes(self._buffer[:start]))
+            del self._buffer[:start]
+
+        # Cari MLLP_END setelah VT
         try:
-            end = self._buffer.index(MLLP_END, start + 1)
+            end = self._buffer.index(MLLP_END, 1)
         except ValueError:
             # Belum lengkap
-            # Buang data sebelum start jika ada
-            if start > 0:
-                del self._buffer[:start]
             return None
 
         # Ambil message lengkap termasuk envelope
@@ -338,9 +342,18 @@ class ResultReceiver:
         if msg_end < len(self._buffer) and self._buffer[msg_end] == 0x0D:
             msg_end += 1
 
-        msg = bytes(self._buffer[start:msg_end])
+        msg = bytes(self._buffer[:msg_end])
         del self._buffer[:msg_end]
         return msg
+
+    def _warn_dropped(self, data: bytes):
+        """WARNING untuk byte non-MLLP yang dibuang; CR/LF/spasi sisa diabaikan."""
+        if not data.strip(b"\r\n\t \x00"):
+            return
+        self._logger.warning(
+            f"[{self._inst_name}] Data HL7 tanpa MLLP <VT> dibuang "
+            f"({len(data)} byte): {self._preview(data)}"
+        )
 
     async def _send_hl7_ack(self, raw_message: bytes, writer: asyncio.StreamWriter):
         """
