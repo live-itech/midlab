@@ -188,6 +188,18 @@ def test_ack_pesan_tak_terbaca_kosong(module):
     assert module.build_ack_response(b"\x0bPID||T45\r\x1c\x0d", INSTRUMENT) == b""
 
 
+def test_ack_atas_ack_tidak_dibalas_cegah_loop_echo(module, caplog):
+    ack_sendiri = module.build_ack_response(OUL, INSTRUMENT)
+    with caplog.at_level(logging.INFO):
+        assert module.build_ack_response(ack_sendiri, INSTRUMENT) == b""
+    assert any("ACK dari alat tidak dibalas" in r.getMessage() for r in caplog.records)
+
+
+def test_pesan_non_ack_lain_tetap_di_ack(module):
+    qc = OUL.replace(b"OUL^R24^OUL_R24", b"QCM^R99^QCM_R99")
+    assert b"ACK^R24^ACK" in module.build_ack_response(qc, INSTRUMENT)
+
+
 # ============================================================
 # Filter penyimpanan & bidirectional
 # ============================================================
@@ -221,6 +233,22 @@ def test_handle_ack(module, code, expected):
 def test_handle_ack_tanpa_msa(module):
     assert module.handle_ack(b"") == "UNKNOWN"
     assert module.handle_ack(OUL) == "UNKNOWN"
+
+
+def test_should_store_result_tipe_non_ack_dibuang_dengan_warning(module, caplog):
+    qc = OUL.replace(b"OUL^R24^OUL_R24", b"QCM^R99^QCM_R99")
+    with caplog.at_level(logging.INFO):
+        assert module.should_store_result({}, qc) is False
+    rec = [r for r in caplog.records if "tidak disimpan" in r.getMessage()]
+    assert rec and rec[0].levelno == logging.WARNING and "QCM^R99" in rec[0].getMessage()
+
+
+def test_should_store_result_ack_hanya_info(module, caplog):
+    ack = mllp(["MSH|^~\\&|||||20200305||ACK^R24^ACK|1|P|2.6", "MSA|AA|1"])
+    with caplog.at_level(logging.INFO):
+        assert module.should_store_result({}, ack) is False
+    rec = [r for r in caplog.records if "tidak disimpan" in r.getMessage()]
+    assert rec and all(r.levelno == logging.INFO for r in rec)
 
 
 # ============================================================
@@ -278,6 +306,23 @@ async def test_receiver_pesan_terpotong_disimpan_dan_di_ack_sekali(
     assert len(saved) == 1
     assert saved[0]["specimen"]["sample_id"] == "T45"
     assert writer.written.count(b"ACK^R24^ACK") == 1
+
+
+async def test_receiver_ack_dari_alat_tidak_dibalas_dan_tidak_disimpan(
+    monkeypatch, module, receiver_logger_bersih
+):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda *a: saved.append(a) or 1,
+    )
+    receiver = ResultReceiver(_FakeConfig(), module)
+    writer = _FakeWriter()
+
+    await receiver.handle_data(module.build_ack_response(OUL, INSTRUMENT), writer)
+
+    assert saved == []
+    assert writer.written == b""
 
 
 async def test_receiver_hl7_polos_memicu_warning(

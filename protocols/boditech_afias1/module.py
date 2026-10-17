@@ -39,7 +39,7 @@ from protocols.boditech_afias1.constants import (
     PROTOCOL_NAME, PROTOCOL_VERSION,
     SEG_MSH, SEG_PID, SEG_OBR, SEG_OBX, SEG_ORC, SEG_SPM, SEG_MSA,
     ACK_AA, ACK_AE, ACK_AR,
-    EVENT_RESULT_PREFIX,
+    EVENT_RESULT_PREFIX, ACK_PREFIX,
 )
 from protocols.boditech_afias1.parser import AfiasParser, field, to_iso8601
 from protocols.boditech_afias1.builder import AfiasBuilder
@@ -173,12 +173,18 @@ class BoditechAfias1Module(BaseProtocolModule):
         message_type = self._parser.get_message_type(raw_bytes)
         if message_type.startswith(EVENT_RESULT_PREFIX):
             return True
-        self._logger.info(f"Pesan {message_type or '(tak dikenal)'} tidak disimpan")
+        text = f"Pesan {message_type or '(tak dikenal)'} tidak disimpan"
+        # ACK (mis. pantulan converter) wajar — cukup INFO; tipe lain dicatat WARNING
+        # agar terlihat saat commissioning.
+        if message_type.startswith(ACK_PREFIX):
+            self._logger.info(text)
+        else:
+            self._logger.warning(text)
         return False
 
     def build_ack_response(self, raw_message: bytes, instrument: dict) -> bytes:
         """
-        ACK^R24^ACK atas pesan alat. Dokumen tidak menyebut apakah alat
+        ACK^R24^ACK atas setiap pesan non-ACK yang MSH-nya terbaca. Dokumen tidak menyebut apakah alat
         menunggu ACK; bila tidak, balasan ini tidak berbahaya.
         """
         try:
@@ -193,6 +199,10 @@ class BoditechAfias1Module(BaseProtocolModule):
             return b""
 
         context = self._parser.parse_msh(msh_fields)
+        # Jangan membalas ACK dengan ACK — cegah loop echo di converter RS232-to-LAN.
+        if context.get("message_type", "").startswith(ACK_PREFIX):
+            self._logger.info("Pesan ACK dari alat tidak dibalas")
+            return b""
         if not context.get("control_id"):
             self._logger.warning("MSH-10 kosong — ACK dikirim tanpa control ID")
         return self._builder.build_ack_r24(context)

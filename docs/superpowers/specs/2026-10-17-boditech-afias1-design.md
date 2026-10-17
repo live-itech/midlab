@@ -121,7 +121,8 @@ Aturan:
 
 ## ACK
 
-Setiap pesan `OUL^R24` dibalas lewat hook `build_ack_response`:
+Setiap pesan non-ACK yang MSH-nya terbaca (bukan hanya `OUL^R24`) dibalas lewat hook
+`build_ack_response`:
 
 ```
 MSH|^~\&|MidLab||<MSH-5 alat>|<MSH-6 alat>|<jam MidLab YYYYMMDDHHMMSS>||ACK^R24^ACK|<MSH-10 alat>|<MSH-11 alat, default P>|2.6
@@ -132,10 +133,14 @@ dibungkus MLLP. Bila pesan tidak bisa dibaca, ACK tidak dikirim (`b""`) dan
 error dicatat. Bila alat ternyata tidak menunggu ACK, balasan ini tidak
 berbahaya.
 
+Pesan ACK dari alat (MSH-9 berawalan `ACK`) tidak dibalas (`b""`, INFO) —
+mencegah loop echo bila converter RS232-to-LAN memantulkan ACK MidLab sendiri.
+
 ## Filter penyimpanan
 
 `should_store_result(result_dict, raw_bytes)` → True hanya bila MSH-9
-berawalan `OUL^R24`; selain itu INFO dan tidak disimpan.
+berawalan `OUL^R24`; selain itu tidak disimpan: WARNING untuk tipe non-ACK (terlihat di `tcp_<id>.log`
+saat commissioning), INFO untuk pesan ACK.
 
 ## Bidirectional
 

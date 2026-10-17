@@ -43,6 +43,7 @@ SEG_SPM = "SPM"
 # ============================================================
 
 EVENT_RESULT_PREFIX = "OUL^R24"   # alat → LIS: hasil
+ACK_PREFIX = "ACK"               # awalan MSH-9 pesan acknowledgement
 EVENT_ACK_R24 = "ACK^R24^ACK"     # LIS → alat: balasan
 ACK_SENDING_APP = "MidLab"        # MSH-3 ACK
 
