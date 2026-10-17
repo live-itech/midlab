@@ -13,6 +13,8 @@ import pytest
 
 from protocols.base import load_module, is_mllp_protocol, _PROTOCOL_REGISTRY
 from protocols.mindray_bs240pro.module import MindrayBS240ProModule, resolve_qc_level
+from protocols.mindray_bs200e.module import MindrayBS200EModule
+from services.tcp_socket.receiver import ResultReceiver
 
 
 PROTOCOL = "HL7_MINDRAY_BS240PRO_360E_240E"
@@ -296,3 +298,98 @@ ACK_Q03_AA = (
 def test_handle_ack_q03(module):
     assert module.handle_ack(ACK_Q03_AA) == "ACK"
     assert module.handle_ack(ACK_Q03_AA.replace(b"MSA|AA|", b"MSA|AE|")) == "NAK"
+
+
+# ============================================================
+# Receiver: split_results (satu pesan -> beberapa baris tbl_result)
+# ============================================================
+
+class _FakeConfig:
+    id = 9
+    name = "Mindray BS-240Pro"
+    protocol = PROTOCOL
+
+    def to_dict(self):
+        return dict(INSTRUMENT)
+
+
+class _FakeWriter:
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data):
+        self.written += data
+
+    async def drain(self):
+        pass
+
+
+@pytest.fixture
+def _bersihkan_logger_receiver():
+    # ResultReceiver memanggil get_logger("tcp_socket", 9) yang meng-cache
+    # handler file di logger "midlab.tcp_socket.9". Buang setelah test agar
+    # test_utils_logger tidak mewarisi handler ke /tmp/midlab.
+    yield
+    lg = logging.getLogger("midlab.tcp_socket.9")
+    for h in list(lg.handlers):
+        h.close()
+        lg.removeHandler(h)
+
+
+async def test_receiver_simpan_satu_baris_per_kontrol(
+    monkeypatch, module, _bersihkan_logger_receiver
+):
+    saved = []
+
+    def _fake_save(instrument_id, protocol, raw_hex, result_dict):
+        saved.append((raw_hex, result_dict))
+        return len(saved)
+
+    monkeypatch.setattr("services.tcp_socket.receiver.save_result", _fake_save)
+    receiver = ResultReceiver(_FakeConfig(), module)
+    writer = _FakeWriter()
+
+    assert await receiver.handle_data(ORU_QC_MULTI, writer) is False
+
+    assert [r["qc"]["lot_number"] for _, r in saved] == ["1111", "2222"]
+    assert saved[0][0] == saved[1][0] == ORU_QC_MULTI.hex()   # raw sama di tiap baris
+    assert all("_qc_controls" not in r for _, r in saved)
+    assert writer.written.count(b"ACK^R01") == 1               # satu pesan, satu ACK
+
+
+async def test_receiver_satu_baris_gagal_tidak_menghentikan_lainnya(
+    monkeypatch, module, _bersihkan_logger_receiver
+):
+    calls = []
+
+    def _fake_save(instrument_id, protocol, raw_hex, result_dict):
+        calls.append(result_dict["qc"]["lot_number"])
+        return None if len(calls) == 1 else 77
+
+    monkeypatch.setattr("services.tcp_socket.receiver.save_result", _fake_save)
+    receiver = ResultReceiver(_FakeConfig(), module)
+
+    await receiver.handle_data(ORU_QC_MULTI, _FakeWriter())
+
+    assert calls == ["1111", "2222"]
+
+
+async def test_receiver_tanpa_hook_tetap_satu_baris(
+    monkeypatch, _bersihkan_logger_receiver
+):
+    # Driver tanpa split_results (BS-200E) tidak berubah perilakunya.
+    bs200e = MindrayBS200EModule()
+    assert not hasattr(bs200e, "split_results")
+    calls = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda *a: calls.append(a) or 1,
+    )
+
+    class _Cfg200E(_FakeConfig):
+        protocol = "HL7_MINDRAY_BS200E"
+
+    receiver = ResultReceiver(_Cfg200E(), bs200e)
+    await receiver.handle_data(ORU_SAMPLE, _FakeWriter())
+
+    assert len(calls) == 1
