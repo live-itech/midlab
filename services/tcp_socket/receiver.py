@@ -514,27 +514,62 @@ class ResultReceiver:
                 )
                 return
 
-            # Simpan ke database
-            raw_hex = raw_bytes.hex()
-            result_id = await asyncio.get_event_loop().run_in_executor(
-                None,
-                save_result,
-                self._config.id,
-                self._config.protocol,
-                raw_hex,
-                result_dict,
-            )
+            # Protocol module boleh menyediakan split_results() untuk memecah
+            # satu pesan menjadi beberapa baris tbl_result — dipakai
+            # HL7_MINDRAY_BS240PRO_360E_240E yang mengirim beberapa kontrol QC
+            # dalam satu pesan, sedangkan /qc-results menerima satu lot+level
+            # per baris. Default: satu pesan = satu baris.
+            split = getattr(self._protocol, "split_results", None)
+            rows = [result_dict]
+            if split is not None:
+                # Hook gagal/kosong tidak boleh membuat data hilang (alat tetap
+                # di-ACK dan tidak akan kirim ulang) — jatuh ke satu baris,
+                # tanpa kunci internal `_qc_controls`.
+                try:
+                    rows = split(result_dict)
+                except Exception as e:
+                    rows = []
+                    self._logger.warning(
+                        f"[{self._inst_name}] split_results gagal: {e} — "
+                        f"simpan sebagai satu baris"
+                    )
+                else:
+                    if not rows:
+                        self._logger.warning(
+                            f"[{self._inst_name}] split_results kosong — "
+                            f"simpan sebagai satu baris"
+                        )
+                if not rows:
+                    rows = [{k: v for k, v in result_dict.items()
+                             if k != "_qc_controls"}]
 
-            if result_id:
-                self._total_results += 1
-                self._logger.info(
-                    f"[{self._inst_name}] Result saved: id={result_id}, "
-                    f"total={self._total_results}"
-                )
-            else:
-                self._logger.error(
-                    f"[{self._inst_name}] Gagal simpan result ke database"
-                )
+            raw_hex = raw_bytes.hex()
+            loop = asyncio.get_event_loop()
+            for row in rows:
+                # Gagal simpan satu baris tidak boleh menghentikan baris lain.
+                try:
+                    result_id = await loop.run_in_executor(
+                        None,
+                        save_result,
+                        self._config.id,
+                        self._config.protocol,
+                        raw_hex,
+                        row,
+                    )
+                except Exception as e:
+                    result_id = None
+                    self._logger.error(f"[{self._inst_name}] Error simpan result: {e}")
+
+                if result_id:
+                    self._total_results += 1
+                    self._logger.info(
+                        f"[{self._inst_name}] Result saved: id={result_id}, "
+                        f"total={self._total_results}"
+                    )
+                else:
+                    self._logger.error(
+                        f"[{self._inst_name}] Gagal simpan result ke database"
+                    )
 
         except Exception as e:
             self._logger.error(

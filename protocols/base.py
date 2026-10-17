@@ -160,6 +160,7 @@ _PROTOCOL_REGISTRY = {
     "COBAS_C111": "protocols.cobas_c111.module",
     "HL7_MINDRAY_BS200E": "protocols.mindray_bs200e.module",
     "HL7_MINDRAY_BC5150": "protocols.mindray_bc5150.module",
+    "HL7_MINDRAY_BS240PRO_360E_240E": "protocols.mindray_bs240pro.module",
     "HL7_ARUMA_AR580": "protocols.aruma_ar580.module",
     "HL7_SD_BIOSENSOR_F2400": "protocols.sd_biosensor_f2400.module",
     "CUSTOM_GLORY_127": "protocols.glory_127.module",
