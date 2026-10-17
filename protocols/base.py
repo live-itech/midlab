@@ -163,6 +163,7 @@ _PROTOCOL_REGISTRY = {
     "HL7_MINDRAY_BS240PRO_360E_240E": "protocols.mindray_bs240pro.module",
     "HL7_ARUMA_AR580": "protocols.aruma_ar580.module",
     "HL7_SD_BIOSENSOR_F2400": "protocols.sd_biosensor_f2400.module",
+    "HL7_BODITECH_AFIAS-1": "protocols.boditech_afias1.module",
     "CUSTOM_GLORY_127": "protocols.glory_127.module",
 }
 
