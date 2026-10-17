@@ -6,7 +6,9 @@ Driver best-effort: satu-satunya sumber adalah contoh pesan di slide 5
 contoh itu, dibungkus MLLP.
 """
 
+import asyncio
 import logging
+import socket as socketlib
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -16,7 +18,9 @@ from protocols.base import load_module, is_mllp_protocol, _PROTOCOL_REGISTRY
 from lib.db import TblResult
 from protocols.boditech_afias1.module import BoditechAfias1Module
 from services.lis_bridge.result_pusher import build_mid_payload
+from services.tcp_socket.config import InstrumentConfig
 from services.tcp_socket.receiver import ResultReceiver
+from services.tcp_socket.service import TCPSocketService
 
 
 PROTOCOL = "HL7_BODITECH_AFIAS-1"
@@ -349,3 +353,108 @@ def test_payload_results_dari_hasil_afias(module):
     assert [(r["test_code"], r["value"], r["status"]) for r in payload["results"]] == [
         ("T4", "33.26", "final")
     ]
+
+
+# ============================================================
+# End-to-end TCPSocketService — connection server & client
+#
+# Socket localhost sungguhan. start() tidak dipanggil karena memasang
+# signal handler SIGTERM/SIGINT pada proses pytest; _run_*_mode() dipanggil
+# langsung dengan _running = True, lalu stop().
+# ============================================================
+
+def _port_bebas() -> int:
+    with socketlib.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _config(connection: str, port: int) -> InstrumentConfig:
+    return InstrumentConfig(
+        id=12, name="Boditech AFIAS-1", ip_address="127.0.0.1", port=port,
+        protocol=PROTOCOL, mode="unidirectional", bidir_mode=None,
+        broadcast_interval=30, connection=connection, is_active=True,
+    )
+
+
+async def _baca_satu_pesan(reader) -> bytes:
+    data = b""
+    while b"\x1c\x0d" not in data:
+        chunk = await reader.read(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
+
+@pytest.fixture
+def e2e_tersimpan(monkeypatch, receiver_logger_bersih):
+    saved = []
+    monkeypatch.setattr(
+        "services.tcp_socket.receiver.save_result",
+        lambda inst_id, proto, raw_hex, result: saved.append(result) or len(saved),
+    )
+    # Status koneksi ditulis ke tbl_lis_event_queue — jangan sentuh DB.
+    monkeypatch.setattr("services.tcp_socket.service.enqueue_lis_event", lambda **k: None)
+    return saved
+
+
+async def test_e2e_connection_server_alat_yang_konek(e2e_tersimpan):
+    port = _port_bebas()
+    svc = TCPSocketService(_config("server", port))
+    svc._running = True
+    task = asyncio.create_task(svc._run_server_mode())
+    try:
+        for _ in range(100):
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                break
+            except OSError:
+                await asyncio.sleep(0.05)
+        else:
+            pytest.fail("TCPSocketService tidak listen")
+
+        writer.write(OUL)
+        await writer.drain()
+        ack = await asyncio.wait_for(_baca_satu_pesan(reader), 5)
+        writer.close()
+    finally:
+        await svc.stop()
+        await asyncio.wait_for(task, 5)
+
+    assert b"ACK^R24^ACK" in ack and b"MSA|AA|1" in ack
+    assert [r["specimen"]["sample_id"] for r in e2e_tersimpan] == ["T45"]
+
+
+async def test_e2e_connection_client_midlab_yang_konek(e2e_tersimpan):
+    # Test berperan sebagai alat / converter RS232-to-LAN yang listen.
+    ack_diterima = asyncio.get_running_loop().create_future()
+
+    async def alat(reader, writer):
+        writer.write(OUL)
+        await writer.drain()
+        ack_diterima.set_result(await _baca_satu_pesan(reader))
+
+    server = await asyncio.start_server(alat, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+
+    svc = TCPSocketService(_config("client", port))
+    svc._running = True
+    task = asyncio.create_task(svc._run_client_mode())
+    try:
+        ack = await asyncio.wait_for(ack_diterima, 5)
+    finally:
+        await svc.stop()
+        await asyncio.wait_for(task, 10)
+        server.close()
+        await server.wait_closed()
+
+    assert b"ACK^R24^ACK" in ack and b"MSA|AA|1" in ack
+    assert [r["specimen"]["sample_id"] for r in e2e_tersimpan] == ["T45"]
+
+
+def test_driver_tidak_mengunci_arah_koneksi(module):
+    # Deklarasi transport ini mengubah perilaku koneksi TCPSocketService;
+    # AFIAS-1 tidak memerlukannya di mode mana pun.
+    assert not getattr(module, "PING_BEFORE_RECONNECT", False)
+    assert not getattr(module, "IDLE_RX_TIMEOUT", 0)

@@ -10,8 +10,14 @@ slide 5 "AFIAS-1 LIS user manual" (Boditech, Rev.00 2025.06).
     alat  → OUL^R24^OUL_R24   MSH + PID + OBR + ORC + SPM + OBX
     MidLab→ ACK^R24^ACK       MSA|AA|<MSH-10>
 
-Mode Network: alat diisi Server IP + Port, jadi alat yang konek —
-tbl_instrument.connection harus 'server'.
+## Koneksi
+
+Driver tidak bergantung arah koneksi — keduanya didukung:
+
+- connection='server' — mode Network alat: alat diisi Server IP + Port dan
+  alat yang konek ke MidLab
+- connection='client' — mis. lewat converter RS232-to-LAN yang diset sebagai
+  TCP server: MidLab yang konek ke IP:port converter
 
 ## Belum diverifikasi (wajib dicek saat pemasangan pertama)
 
