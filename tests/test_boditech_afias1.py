@@ -479,6 +479,9 @@ async def test_e2e_connection_client_midlab_yang_konek(e2e_tersimpan):
         writer.write(OUL)
         await writer.drain()
         ack_diterima.set_result(await _baca_satu_pesan(reader))
+        # Python 3.12: server.wait_closed() menunggu semua koneksi tertutup;
+        # tanpa ini teardown menggantung selamanya.
+        writer.close()
 
     server = await asyncio.start_server(alat, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
