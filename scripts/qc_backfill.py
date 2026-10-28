@@ -12,7 +12,8 @@ Aman diulang: message_id deterministik (MID{id}-{lot}-L{level}-{run_at}),
 sehingga run yang sudah pernah sampai dibalas "duplicate" oleh EazyLab.
 
 Batasan: hanya driver HL7/MLLP yang menghasilkan blok `qc` (saat ini
-HL7_MINDRAY_BS200E) dan hanya selama comm log masih tersimpan (rotasi).
+HL7_MINDRAY_BS200E dan HL7_MINDRAY_BS240PRO_360E_240E) dan hanya selama comm
+log masih tersimpan (rotasi).
 
 Jalankan sebagai user service (hanya dia yang bisa baca config/DB):
     sudo -u midlab /opt/midlab/.venv/bin/python /opt/midlab/scripts/qc_backfill.py \\
@@ -69,22 +70,26 @@ def collect_payloads(instrument, module, date_prefix: str) -> list[dict]:
 
 
 def _collect(instrument, module, date_prefix: str, found: dict):
+    # Driver yang mengirim beberapa kontrol per pesan (BS-240Pro) memecahnya
+    # lewat split_results() — jalur yang sama dengan TCPSocketService.
+    split = getattr(module, "split_results", None)
     for raw in raw_messages(instrument.id):
         parsed = module.parse(raw, {"id": instrument.id, "name": instrument.name})
-        qc = parsed.get("qc")
-        if not isinstance(qc, dict) or not str(qc.get("run_at", "")).startswith(date_prefix):
-            continue
-        row = TblResult()
-        row.id = 0
-        row.result_json = parsed
-        row.received_at = datetime.now()
-        try:
-            payload = build_qc_payload(row, instrument)
-        except QcPayloadError as e:
-            print(f"  lewati: {e}")
-            continue
-        key = (payload["message_id"], payload["results"][0]["test_code"])
-        found.setdefault(key, payload)
+        for result_json in (split(parsed) if split is not None else [parsed]):
+            qc = result_json.get("qc")
+            if not isinstance(qc, dict) or not str(qc.get("run_at", "")).startswith(date_prefix):
+                continue
+            row = TblResult()
+            row.id = 0
+            row.result_json = result_json
+            row.received_at = datetime.now()
+            try:
+                payload = build_qc_payload(row, instrument)
+            except QcPayloadError as e:
+                print(f"  lewati: {e}")
+                continue
+            key = (payload["message_id"], payload["results"][0]["test_code"])
+            found.setdefault(key, payload)
 
 
 class _OfflineInstrument:
