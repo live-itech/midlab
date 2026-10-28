@@ -310,12 +310,21 @@ def test_bc5150_mendeklarasikan_pengawasan_idle():
     assert modul.TCP_KEEPALIVE_PROBES == 3
 
 
+def test_bs200e_hanya_keepalive_tanpa_idle_timeout():
+    # BS-200E tak punya heartbeat — diam lama itu normal, jadi hanya lapis
+    # keepalive kernel yang dipakai (koneksi setengah mati 28 Okt 2026).
+    modul = load_module("HL7_MINDRAY_BS200E")
+
+    assert getattr(modul, "IDLE_RX_TIMEOUT", 0) == 0
+    assert modul.TCP_KEEPALIVE_IDLE == 30
+
+
 @pytest.mark.parametrize(
     "nama",
-    ["HL7_MINDRAY_BS200E", "ASTM", "HL7"],
+    ["ASTM", "HL7"],
 )
 def test_protokol_lain_tidak_ikut_mendeklarasikan(nama):
-    # Perbaikan ini sengaja dibatasi ke BC-5150 saja.
+    # Pengawasan koneksi dipasang per alat, bukan untuk protokol generik.
     modul = load_module(nama)
 
     assert getattr(modul, "IDLE_RX_TIMEOUT", 0) == 0
