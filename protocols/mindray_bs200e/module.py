@@ -71,6 +71,16 @@ class MindrayBS200EModule(BaseProtocolModule):
     # tak akan datang.
     ACK_EXPECTED_ON_NOT_FOUND = False
 
+    # Alat kadang membuka koneksi baru tanpa FIN/RST untuk koneksi lama
+    # (tcp_1.log 28 Okt 2026 16:10–16:20: 4x "digantikan koneksi baru").
+    # Tanpa keepalive, socket setengah mati tetap ESTAB dan dashboard tetap
+    # "online". 30 + 3 x 10 detik = peer mati terdeteksi ~60 detik.
+    # Sengaja TIDAK memakai IDLE_RX_TIMEOUT: BS-200E tidak punya heartbeat,
+    # diam berjam-jam saat tidak ada sampel itu normal.
+    TCP_KEEPALIVE_IDLE = 30
+    TCP_KEEPALIVE_INTERVAL = 10
+    TCP_KEEPALIVE_PROBES = 3
+
     def __init__(self):
         self._parser = MindrayParser()
         self._builder = MindrayBuilder()
